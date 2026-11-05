@@ -234,6 +234,28 @@ impl Bus {
         self.wait_states = WaitStates::from_registers(self.waitcnt, self.memory_control);
     }
 
+    /// SRAM read at any width: the byte at the exact address, repeated across the result
+    /// (gbatek: Accessing SRAM Area by 16bit/32bit).
+    fn sram_read_replicated(&mut self, address: u32, width: Width) -> u32 {
+        self.charge(address, width);
+        self.cart.sram_read8(address) as u32 * 0x0101_0101
+    }
+
+    /// SRAM write at 16/32-bit width: only the byte at the exact address changes, set to the
+    /// low byte of `value ROR (address * 8)` (gbatek: Accessing SRAM Area by 16bit/32bit).
+    fn sram_write_rotated(&mut self, address: u32, value: u32, width: Width) {
+        self.charge(address, width);
+        let rotated = value.rotate_right((address & 3) * 8);
+        self.cart.sram_write8(address, rotated as u8);
+    }
+
+    /// Size of the BG part of VRAM, where byte writes are allowed: 64K in tiled modes, 80K in
+    /// bitmap modes 3-5 (gbatek: Writing 8bit Data to Video Memory).
+    fn vram_bg_area_size(&self) -> usize {
+        let bg_mode = self.ppu.dispcnt() & 7; // DISPCNT bits 0-2
+        if bg_mode >= 3 { 0x14000 } else { 0x10000 }
+    }
+
     pub fn read8(&mut self, address: u32) -> u8 {
         match self.charge(address, Width::Byte) {
             Region::Bios => bios_read(address, 1) as u8,
@@ -250,7 +272,10 @@ impl Bus {
     }
 
     pub fn read16(&mut self, address: u32) -> u16 {
-        // ponytail: misaligned addresses are force-aligned; rotation of misaligned reads belongs to the CPU.
+        if region_of(address) == Region::Sram {
+            return self.sram_read_replicated(address, Width::Halfword) as u16;
+        }
+        // Misaligned addresses are force-aligned; rotating misaligned reads belongs to the CPU.
         let address = address & !1;
         match self.charge(address, Width::Halfword) {
             Region::Bios => bios_read(address, 2) as u16,
@@ -261,12 +286,15 @@ impl Bus {
             Region::Vram => read_le16(&self.ppu.vram, vram_offset(address)),
             Region::Oam => read_le16(&self.ppu.oam, (address & 0x3FF) as usize),
             Region::Rom => self.cart.rom_read16(address),
-            Region::Sram => self.cart.sram_read8(address) as u16 * 0x0101,
+            Region::Sram => unreachable!("SRAM handled before alignment"),
             Region::Unmapped => 0,
         }
     }
 
     pub fn read32(&mut self, address: u32) -> u32 {
+        if region_of(address) == Region::Sram {
+            return self.sram_read_replicated(address, Width::Word);
+        }
         let address = address & !3;
         match self.charge(address, Width::Word) {
             Region::Bios => bios_read(address, 4),
@@ -281,7 +309,7 @@ impl Bus {
                 let high = self.cart.rom_read16(address + 2) as u32;
                 low | (high << 16)
             }
-            Region::Sram => self.cart.sram_read8(address) as u32 * 0x0101_0101,
+            Region::Sram => unreachable!("SRAM handled before alignment"),
             Region::Unmapped => 0,
         }
     }
@@ -291,13 +319,15 @@ impl Bus {
             Region::Ewram => self.ewram[(address as usize) & (EWRAM_SIZE - 1)] = value,
             Region::Iwram => self.iwram[(address as usize) & (IWRAM_SIZE - 1)] = value,
             Region::Io => self.io_write8(io_offset(address), value),
-            // Palette and VRAM have a 16-bit data bus: a byte write lands in both halves.
-            // ponytail: VRAM byte writes into the OBJ area should be ignored; mode-dependent, left to the PPU agent.
+            // Palette and BG VRAM have a 16-bit data bus: a byte write lands in both halves.
             Region::Palette => {
                 write_le16(&mut self.ppu.palette, (address & 0x3FE) as usize, value as u16 * 0x0101)
             }
             Region::Vram => {
-                write_le16(&mut self.ppu.vram, vram_offset(address & !1), value as u16 * 0x0101)
+                let offset = vram_offset(address & !1);
+                if offset < self.vram_bg_area_size() {
+                    write_le16(&mut self.ppu.vram, offset, value as u16 * 0x0101);
+                } // byte writes to OBJ VRAM are ignored
             }
             Region::Oam => {} // OAM ignores 8-bit writes
             Region::Sram => self.cart.sram_write8(address, value),
@@ -306,6 +336,9 @@ impl Bus {
     }
 
     pub fn write16(&mut self, address: u32, value: u16) {
+        if region_of(address) == Region::Sram {
+            return self.sram_write_rotated(address, value as u32 * 0x0001_0001, Width::Halfword);
+        }
         let address = address & !1;
         match self.charge(address, Width::Halfword) {
             Region::Ewram => write_le16(&mut self.ewram, (address as usize) & (EWRAM_SIZE - 1), value),
@@ -314,13 +347,16 @@ impl Bus {
             Region::Palette => write_le16(&mut self.ppu.palette, (address & 0x3FF) as usize, value),
             Region::Vram => write_le16(&mut self.ppu.vram, vram_offset(address), value),
             Region::Oam => write_le16(&mut self.ppu.oam, (address & 0x3FF) as usize, value),
-            Region::Sram => self.cart.sram_write8(address, value as u8),
+            Region::Sram => unreachable!("SRAM handled before alignment"),
             Region::Rom => self.cart.rom_write16(address, value),
             Region::Bios | Region::Unmapped => {}
         }
     }
 
     pub fn write32(&mut self, address: u32, value: u32) {
+        if region_of(address) == Region::Sram {
+            return self.sram_write_rotated(address, value, Width::Word);
+        }
         let address = address & !3;
         match self.charge(address, Width::Word) {
             Region::Ewram => write_le32(&mut self.ewram, (address as usize) & (EWRAM_SIZE - 1), value),
@@ -329,7 +365,7 @@ impl Bus {
             Region::Palette => write_le32(&mut self.ppu.palette, (address & 0x3FF) as usize, value),
             Region::Vram => write_le32(&mut self.ppu.vram, vram_offset(address), value),
             Region::Oam => write_le32(&mut self.ppu.oam, (address & 0x3FF) as usize, value),
-            Region::Sram => self.cart.sram_write8(address, value as u8),
+            Region::Sram => unreachable!("SRAM handled before alignment"),
             Region::Rom => {
                 self.cart.rom_write16(address, value as u16);
                 self.cart.rom_write16(address + 2, (value >> 16) as u16);
@@ -340,10 +376,14 @@ impl Bus {
 }
 
 /// IO offset from 0x04000000. Only 0x000-0x3FF and 0x800-0x803 are registers; the rest reads 0.
+/// The internal memory control register at 0x800 repeats every 64K (gbatek: Memory Mirrors).
 fn io_offset(address: u32) -> u32 {
     let offset = address & 0x00FF_FFFF;
-    if offset < 0x400 || (0x800..0x804).contains(&offset) {
+    let in_64k_block = offset & 0xFFFF;
+    if offset < 0x400 {
         offset
+    } else if (0x800..0x804).contains(&in_64k_block) {
+        in_64k_block
     } else {
         0xFFFF_FFFF // no owner: io.rs treats it as unmapped
     }
@@ -356,7 +396,11 @@ fn bios_read(address: u32, size: usize) -> u32 {
     if offset + size > BIOS_SIZE {
         return 0;
     }
-    (0..size).fold(0, |value, i| value | (BIOS[offset + i] as u32) << (8 * i))
+    match size {
+        1 => BIOS[offset] as u32,
+        2 => read_le16(BIOS, offset) as u32,
+        _ => read_le32(BIOS, offset),
+    }
 }
 
 #[cfg(test)]
@@ -433,6 +477,36 @@ mod tests {
         bus.take_access_cycles();
         bus.read32(0x0200_0000);
         assert_eq!(bus.take_access_cycles(), 4);
+    }
+
+    #[test]
+    fn sram_wide_accesses_use_the_exact_byte() {
+        let mut bus = Bus::new(&[]);
+        bus.write8(0x0E00_0001, 0x5A);
+        assert_eq!(bus.read16(0x0E00_0001), 0x5A5A);
+        assert_eq!(bus.read32(0x0E00_0001), 0x5A5A_5A5A);
+        bus.write32(0x0E00_0002, 0x4433_2211); // ROR 16 -> low byte 0x33
+        assert_eq!(bus.read8(0x0E00_0002), 0x33);
+        assert_eq!(bus.read8(0x0E00_0000), 0xFF, "neighbour untouched");
+    }
+
+    #[test]
+    fn vram_byte_writes_skip_obj_area() {
+        let mut bus = Bus::new(&[]);
+        bus.write8(0x0600_0001, 0x12);
+        assert_eq!(bus.read16(0x0600_0000), 0x1212);
+        bus.write8(0x0601_0000, 0x34);
+        assert_eq!(bus.read16(0x0601_0000), 0, "OBJ VRAM ignores byte writes in tiled modes");
+        bus.write16(0x0400_0000, 3); // DISPCNT: bitmap mode 3
+        bus.write8(0x0601_0000, 0x34);
+        assert_eq!(bus.read16(0x0601_0000), 0x3434, "BG area reaches 0x13FFF in bitmap modes");
+    }
+
+    #[test]
+    fn memory_control_register_mirrors_every_64k() {
+        let mut bus = Bus::new(&[]);
+        bus.write32(0x0401_0800, 0x0E00_0020);
+        assert_eq!(bus.read32(0x0400_0800), 0x0E00_0020);
     }
 
     #[test]
