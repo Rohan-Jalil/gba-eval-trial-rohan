@@ -413,7 +413,7 @@ mod tests {
     fn immediate_transfer_runs_before_the_next_instruction_can_cancel_it() {
         let mut bus = Bus::new(&[]);
         bus.write32(0x0200_0000, 0xCAFE_F00D);
-        program_dma3(&mut bus, 0x0200_0000, 0x0300_0000, 1, 0x8400); // enable, 32-bit, immediate
+        program_dma3(&mut bus, 0x0200_0000, 0x0300_0000, 1, ENABLE_BIT | WORD_SIZE_BIT); // immediate
         run_pending_transfers(&mut bus); // gba.rs runs this after the enabling instruction
         bus.write16(DMA3 + 10, 0); // the next instruction disables the channel
         assert_eq!(bus.read32(0x0300_0000), 0xCAFE_F00D);
