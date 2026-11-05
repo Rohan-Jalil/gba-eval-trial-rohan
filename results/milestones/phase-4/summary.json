@@ -1,0 +1,183 @@
+{
+  "candidate": "gba_emu",
+  "candidate_sha256": "9b0ee1a09d9d48bd13a0488d1755fac3a96a55a4372e9f051ae36119ad55c020",
+  "graded_at": "2026-11-05T16:20:29Z",
+  "per_testcase": {
+    "mgba-carry": {
+      "video_score": 1.0,
+      "section": "procedural",
+      "subsystem": "cpu"
+    },
+    "spout-gameplay": {
+      "video_score": 0.28505042833613514,
+      "audio_score": 0.198917234131184,
+      "section": "replay",
+      "subsystem": "gameplay"
+    },
+    "tonc-snd1": {
+      "video_score": 0.9916666666666667,
+      "audio_score": 0.9814571820419745,
+      "section": "replay",
+      "subsystem": "gameplay"
+    },
+    "mgba-io-read": {
+      "video_score": 1.0,
+      "section": "procedural",
+      "subsystem": "memory"
+    },
+    "mgba-dma": {
+      "video_score": 1.0,
+      "section": "procedural",
+      "subsystem": "dma"
+    },
+    "ppu-vram-mirror": {
+      "video_score": 1.0,
+      "section": "procedural",
+      "subsystem": "halt_irq"
+    },
+    "aw-arm-ldm-stm": {
+      "video_score": 1.0,
+      "section": "procedural",
+      "subsystem": "cpu"
+    },
+    "heartwrench-gameplay": {
+      "video_score": 0.5764114450431288,
+      "audio_score": 0.5538934898862057,
+      "section": "replay",
+      "subsystem": "gameplay"
+    },
+    "waimanu-gameplay": {
+      "video_score": 0.9911547804227082,
+      "audio_score": 0.9120331599672717,
+      "section": "replay",
+      "subsystem": "gameplay"
+    },
+    "varooom-3d-gameplay": {
+      "video_score": 0.9887311381822461,
+      "audio_score": 0.964264352062394,
+      "section": "replay",
+      "subsystem": "gameplay"
+    },
+    "timer-start-stop": {
+      "video_score": 1.0,
+      "section": "procedural",
+      "subsystem": "timer"
+    },
+    "aw-thumb-ldr-str": {
+      "video_score": 1.0,
+      "section": "procedural",
+      "subsystem": "cpu"
+    },
+    "aw-arm-ldr-str": {
+      "video_score": 1.0,
+      "section": "procedural",
+      "subsystem": "cpu"
+    },
+    "collie-defense-gameplay": {
+      "video_score": 0.9987552514340245,
+      "audio_score": 0.9964939613605682,
+      "section": "replay",
+      "subsystem": "gameplay"
+    },
+    "aw-thumb-alu": {
+      "video_score": 1.0,
+      "section": "procedural",
+      "subsystem": "cpu"
+    },
+    "bulletgba-gameplay": {
+      "video_score": 0.9991148565511712,
+      "audio_score": 0.9742030834139375,
+      "section": "replay",
+      "subsystem": "gameplay"
+    },
+    "aw-arm-alu": {
+      "video_score": 1.0,
+      "section": "procedural",
+      "subsystem": "cpu"
+    },
+    "dma-priority": {
+      "video_score": 1.0,
+      "section": "procedural",
+      "subsystem": "dma"
+    },
+    "memory": {
+      "video_score": 1.0,
+      "section": "procedural",
+      "subsystem": "memory"
+    },
+    "mgba-shifter": {
+      "video_score": 1.0,
+      "section": "procedural",
+      "subsystem": "cpu"
+    },
+    "goodboy-gameplay": {
+      "video_score": 0.0809201226243208,
+      "audio_score": 0.9511310549272691,
+      "section": "replay",
+      "subsystem": "gameplay"
+    },
+    "timer-reload": {
+      "video_score": 1.0,
+      "section": "procedural",
+      "subsystem": "timer"
+    },
+    "mgba-multiply-long": {
+      "video_score": 0.000017382629367735252,
+      "section": "procedural",
+      "subsystem": "cpu"
+    },
+    "aw-thumb-ldm-stm": {
+      "video_score": 1.0,
+      "section": "procedural",
+      "subsystem": "cpu"
+    },
+    "piugba-gameplay": {
+      "video_score": 0.9935458400004015,
+      "audio_score": 0.684027038370926,
+      "section": "replay",
+      "subsystem": "gameplay"
+    },
+    "chip-advance-gameplay": {
+      "video_score": 0.9550844016789356,
+      "audio_score": 0.8423363124432611,
+      "section": "replay",
+      "subsystem": "gameplay"
+    },
+    "celeste-gameplay": {
+      "video_score": 0.7264113522763402,
+      "audio_score": 0.8857274692405387,
+      "section": "replay",
+      "subsystem": "gameplay"
+    }
+  },
+  "sections": {
+    "procedural": {
+      "score": 0.7611117871022531,
+      "weight": 0.2,
+      "subsystems": {
+        "comprehensive": 0.0,
+        "memory": 1.0,
+        "cpu": 0.8888908202921519,
+        "dma": 1.0,
+        "timer": 1.0,
+        "halt_irq": 1.0
+      }
+    },
+    "audio": {
+      "score": 0.8852155485685831,
+      "weight": 0.2,
+      "subsystems": {
+        "game_audio": 0.8585343498945485,
+        "psg": 0.9118967472426178
+      }
+    },
+    "replay": {
+      "score": 0.7806223893832798,
+      "weight": 0.6,
+      "subsystems": {
+        "gameplay": 0.7806223893832798
+      }
+    }
+  },
+  "overall": 0.7976389007641351
+}

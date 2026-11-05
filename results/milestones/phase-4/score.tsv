@@ -1,0 +1,2 @@
+date	phase	commit	overall	replay	procedural	audio	note
+2026-11-05	phase-4	e551e06	0.7976	0.7806	0.7611	0.8852	PSG channels 1-4, FIFO A/B and mixer; SOUNDCNT_X silent-envelope status
