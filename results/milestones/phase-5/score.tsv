@@ -1,0 +1,2 @@
+date	phase	commit	overall	replay	procedural	audio	note
+2026-11-06	phase-5	a31eece	0.8476	0.8648	0.7611	0.8827	DISPCNT forced-blank power-on, immediate DMA start (goodboy), SRAM_V detection
