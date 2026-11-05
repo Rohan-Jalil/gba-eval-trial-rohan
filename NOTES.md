@@ -60,6 +60,7 @@ date, what, why.
 | 2026-11-05 | Compositor lives in effects.rs: windows (W0 > W1 > OBJ window > outside), alpha/brighten/darken, semi-transparent sprites, BG mosaic as a post-pass. Vertical mosaic reuses a stored first line per block. The OBJ window needs DISPCNT bits 12 and 15 | One owned file for Phase 3 effects. The vertical mosaic shortcut ignores mid-block changes (reviewer minor, deferred); affine/bitmap layers skip mosaic for now. |
 | 2026-11-05 | Grading is serialised: one grader container at a time across all agents. Reviewers no longer grade; the integrator grades merged main | Three workers each running 2-3 graders in parallel (8 containers on 8 cores, load ~58) got runs killed for low memory. |
 | 2026-11-05 | Phase 3 review minors deferred: sprite rename `x`/`affine_parameters`, OBJ tile 1023 past VRAM end, affine address helpers, `AffineWalk` field privacy, compose_line split into helpers, `alpha_blend` readability, vertical-mosaic block-start edge case | All minor; no gate impact. |
+| 2026-11-05 | Phase 3 milestone: overall 0.6213 (replay 0.7818, procedural 0.7611, audio 0). Beats the 0.5345 baseline overall and in replay (0.596) and procedural (0.486). Replays: bulletgba 0.999, collie-defense 0.999, piugba 0.994, waimanu 0.991, varooom 0.989, chip-advance 0.955, celeste 0.73, heartwrench 0.58, spout 0.30, goodboy 0.08 | Must-have scope (phases 0-3) complete and gated. Lowest replays (goodboy, spout, heartwrench, celeste) are Phase 5 compatibility/timing candidates; audio (20% of the score) is Phase 4. |
 
 ## Agent and model usage per phase
 
@@ -84,3 +85,5 @@ date, what, why.
 | 2026-11-05 | 3 | ppu-sprites | claude-opus-5-5 | phase3/ppu-sprites | Merged after 1 review round (merge, clean, 4 minor). Grader runs killed (memory); graded by the integrator after merge |
 | 2026-11-05 | 3 | ppu-affine-bitmap | claude-opus-5-5 | phase3/ppu-affine-bitmap | Merged after 1 review round (merge, clean). Needed the integrator's PA/PD power-on contract change |
 | 2026-11-05 | 3 | ppu-effects | claude-opus-5-5 | phase3/ppu-effects | Merged last, after 1 review round (merge, clean, 6 minor). piugba 0.32 to 0.94 on its partial run |
+| 2026-11-05 | 3 | reviewer (x3, fresh each time) | claude-opus-5-5 | phase3/* | sprites 1, affine-bitmap 1, effects 1 round; no grading (serialised to the integrator) |
+| 2026-11-05 | 3 | executor (integrator) | claude-opus-5-5 | main | Layer contract, PA/PD power-on, merges, serial grading, phase-3 milestone 0.6213 |
