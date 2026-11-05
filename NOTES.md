@@ -39,6 +39,8 @@ date, what, why.
 | 2026-11-05 | Human decision: accept losing mgba-multiply-long. Multiplies keep C unchanged and no carry model is derived | No gbatek source for the rule, and the fitted version raised an originality concern. Cost is about 0.35 x 1/9 of the cpu subsystem, roughly 0.008 overall. |
 | 2026-11-05 | Phase 1 milestone: overall 0.1303 (replay 0.1143, procedural 0.3083, audio 0). CPU tests 6/6 armwrestler at 1.0, memory 1.0, tonc-snd1 video 0.976. Replays 0.0001-0.09, mostly waiting on IRQ/timers/DMA (Phase 2) and sprites (Phase 3) | First recorded milestone; baseline to beat is 0.5345. |
 | 2026-11-05 | Reference shows white (forced blank) at key-demo frame 0 where we show black | Likely the BIOS/boot DISPCNT state during the hidden frames; check in Phase 2/3 if early-frame replay scores suffer. |
+| 2026-11-05 | Phase 2: ownership of src/irq.rs handed to the irq-halt worker for this phase, plus `service_interrupts_and_halt` and exception entry in src/cpu/mod.rs and HALTCNT handling. It returns to the integrator after the merge | PLAN.md Phase 2 assigns IRQ delivery and halt to that worker; the CPU hook already exists in step(). |
+| 2026-11-05 | `.claude/worktrees/` added to .gitignore | Agent worktrees made `git status` dirty and triggered grade-full.sh's uncommitted-changes warning. |
 
 ## Agent and model usage per phase
 
