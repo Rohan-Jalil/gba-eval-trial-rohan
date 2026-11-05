@@ -1,32 +1,209 @@
 //! Four hardware timers, IO 0x100-0x10F (gbatek: GBA Timers).
 //!
-//! Phase 0 stub: registers are stored; counting, prescaler, cascade and overflow IRQs come in Phase 2.
+//! Each timer is advanced in bulk: `step` turns elapsed cycles into ticks with shifts and
+//! divisions, so a long HALT costs the same as one instruction.
 
-use crate::io::PlainRegisters;
-use crate::irq::Irq;
+use crate::irq::{Irq, IrqSource};
 
 const IO_START: u32 = 0x100; // TM0CNT_L, first timer register
 
+const CONTROL_PRESCALER_MASK: u16 = 0x0003; // TMxCNT_H bits 0-1: prescaler selection
+const CONTROL_COUNT_UP: u16 = 0x0004; // TMxCNT_H bit 2: count-up (cascade) timing
+const CONTROL_IRQ_ENABLE: u16 = 0x0040; // TMxCNT_H bit 6: IRQ on overflow
+const CONTROL_START: u16 = 0x0080; // TMxCNT_H bit 7: start/stop
+const CONTROL_WRITABLE_BITS: u16 = CONTROL_PRESCALER_MASK | CONTROL_COUNT_UP | CONTROL_IRQ_ENABLE | CONTROL_START;
+
+/// log2 of the prescaler divider for selections F/1, F/64, F/256, F/1024.
+const PRESCALER_SHIFTS: [u32; 4] = [0, 6, 8, 10];
+
+/// Cycles between the start bit going 0 -> 1 and the first counted cycle.
+/// gbatek does not document a start delay; this is the calibration knob for it.
+const START_DELAY_CYCLES: u32 = 0;
+
+const IRQ_SOURCES: [IrqSource; 4] = [IrqSource::Timer0, IrqSource::Timer1, IrqSource::Timer2, IrqSource::Timer3];
+
+#[derive(Clone, Copy, Default)]
+struct Timer {
+    /// Current counter value (what TMxCNT_L reads).
+    counter: u16,
+    /// Value loaded on start and on overflow (what TMxCNT_L writes).
+    reload: u16,
+    /// TMxCNT_H, unused bits cleared.
+    control: u16,
+    /// Cycles accumulated towards the next prescaler tick.
+    prescaler_cycles: u32,
+    /// Cycles still to wait after a start before counting begins.
+    start_delay: u32,
+}
+
+impl Timer {
+    fn running(&self) -> bool {
+        self.control & CONTROL_START != 0
+    }
+
+    fn prescaler_shift(&self) -> u32 {
+        PRESCALER_SHIFTS[(self.control & CONTROL_PRESCALER_MASK) as usize]
+    }
+
+    /// Convert elapsed cycles into prescaler ticks, keeping the remainder for next time.
+    fn ticks_from_cycles(&mut self, cycles: u32) -> u32 {
+        let delay_spent = cycles.min(self.start_delay);
+        self.start_delay -= delay_spent;
+        let total = self.prescaler_cycles + (cycles - delay_spent);
+        let shift = self.prescaler_shift();
+        self.prescaler_cycles = total & ((1 << shift) - 1);
+        total >> shift
+    }
+
+    /// Advance the counter by `ticks` increments, reloading on every overflow.
+    /// Returns how many times it overflowed.
+    fn count(&mut self, ticks: u32) -> u32 {
+        let ticks_to_first_overflow = 0x1_0000 - self.counter as u32;
+        if ticks < ticks_to_first_overflow {
+            self.counter += ticks as u16;
+            return 0;
+        }
+        let ticks_after_first_overflow = ticks - ticks_to_first_overflow;
+        let ticks_per_period = 0x1_0000 - self.reload as u32;
+        self.counter = self.reload + (ticks_after_first_overflow % ticks_per_period) as u16;
+        1 + ticks_after_first_overflow / ticks_per_period
+    }
+
+    /// TMxCNT_H write: a 0 -> 1 start transition copies the reload value into the counter.
+    fn write_control(&mut self, value: u16) {
+        let was_running = self.running();
+        self.control = value & CONTROL_WRITABLE_BITS;
+        if !was_running && self.running() {
+            self.counter = self.reload;
+            self.prescaler_cycles = 0;
+            self.start_delay = START_DELAY_CYCLES;
+        }
+    }
+}
+
 pub struct Timers {
-    registers: PlainRegisters<8>,
+    timers: [Timer; 4],
 }
 
 impl Timers {
     pub fn new() -> Self {
-        Timers { registers: PlainRegisters::new(IO_START) }
+        Timers { timers: [Timer::default(); 4] }
     }
 
     /// Advance all timers by `cycles`. Returns a bit mask of timers that overflowed (bit 0 = timer 0),
     /// which gba.rs forwards to the APU for FIFO ticks. Overflow IRQs are requested on `irq`.
-    pub fn step(&mut self, _cycles: u32, _irq: &mut Irq) -> u8 {
-        0
+    /// ponytail: one bit per timer per call, so the APU sees at most one FIFO tick per step even if
+    /// a timer overflowed several times; return counts if FIFO timing needs it.
+    pub fn step(&mut self, cycles: u32, irq: &mut Irq) -> u8 {
+        let mut overflow_mask = 0;
+        let mut previous_overflows = 0;
+        for (index, timer) in self.timers.iter_mut().enumerate() {
+            let overflows = if !timer.running() {
+                0
+            } else if index > 0 && timer.control & CONTROL_COUNT_UP != 0 {
+                timer.count(previous_overflows)
+            } else {
+                let ticks = timer.ticks_from_cycles(cycles);
+                timer.count(ticks)
+            };
+            if overflows > 0 {
+                overflow_mask |= 1 << index;
+                if timer.control & CONTROL_IRQ_ENABLE != 0 {
+                    irq.request(IRQ_SOURCES[index]);
+                }
+            }
+            previous_overflows = overflows;
+        }
+        overflow_mask
     }
 
     pub fn io_read16(&mut self, offset: u32) -> u16 {
-        self.registers.read(offset)
+        let timer = &self.timers[timer_index(offset)];
+        if offset & 2 == 0 {
+            timer.counter
+        } else {
+            timer.control
+        }
     }
 
     pub fn io_write16(&mut self, offset: u32, value: u16, mask: u16) {
-        self.registers.write(offset, value, mask)
+        let timer = &mut self.timers[timer_index(offset)];
+        if offset & 2 == 0 {
+            timer.reload = crate::io::merge(timer.reload, value, mask);
+        } else {
+            let control = crate::io::merge(timer.control, value, mask);
+            timer.write_control(control);
+        }
+    }
+}
+
+fn timer_index(offset: u32) -> usize {
+    ((offset - IO_START) / 4) as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TM0CNT_L: u32 = 0x100;
+    const TM0CNT_H: u32 = 0x102;
+    const TM1CNT_L: u32 = 0x104;
+    const TM1CNT_H: u32 = 0x106;
+
+    fn start(timers: &mut Timers, low_offset: u32, reload: u16, control: u16) {
+        timers.io_write16(low_offset, reload, 0xFFFF);
+        timers.io_write16(low_offset + 2, control | CONTROL_START, 0xFFFF);
+    }
+
+    #[test]
+    fn prescaler_divides_cycles() {
+        let mut timers = Timers::new();
+        let mut irq = Irq::new();
+        start(&mut timers, TM0CNT_L, 0, 1); // F/64
+        timers.step(63, &mut irq);
+        assert_eq!(timers.io_read16(TM0CNT_L), 0);
+        timers.step(1 + 64 * 9, &mut irq);
+        assert_eq!(timers.io_read16(TM0CNT_L), 10);
+    }
+
+    #[test]
+    fn reload_on_start_and_overflow_with_irq() {
+        let mut timers = Timers::new();
+        let mut irq = Irq::new();
+        start(&mut timers, TM0CNT_L, 0xFFF0, CONTROL_IRQ_ENABLE);
+        assert_eq!(timers.io_read16(TM0CNT_L), 0xFFF0);
+        // Writing the reload while running does not touch the counter.
+        timers.io_write16(TM0CNT_L, 0xFF00, 0xFFFF);
+        assert_eq!(timers.io_read16(TM0CNT_L), 0xFFF0);
+        assert_eq!(timers.step(0x10 + 5, &mut irq), 1);
+        assert_eq!(timers.io_read16(TM0CNT_L), 0xFF05);
+        assert_ne!(irq.interrupt_flags & (1 << IrqSource::Timer0 as u16), 0);
+    }
+
+    #[test]
+    fn multiple_overflows_in_one_step_and_cascade() {
+        let mut timers = Timers::new();
+        let mut irq = Irq::new();
+        start(&mut timers, TM1CNT_L, 0, CONTROL_COUNT_UP);
+        start(&mut timers, TM0CNT_L, 0xFF00, 0);
+        // 0x100 ticks per period: 3 full overflows plus 7 ticks.
+        assert_eq!(timers.step(0x300 + 7, &mut irq), 1);
+        assert_eq!(timers.io_read16(TM0CNT_L), 0xFF07);
+        assert_eq!(timers.io_read16(TM1CNT_L), 3);
+        assert_eq!(irq.interrupt_flags, 0);
+    }
+
+    #[test]
+    fn stop_freezes_counter_and_restart_reloads() {
+        let mut timers = Timers::new();
+        let mut irq = Irq::new();
+        start(&mut timers, TM0CNT_L, 100, 0);
+        timers.step(5, &mut irq);
+        timers.io_write16(TM0CNT_H, 0, 0xFFFF);
+        timers.step(50, &mut irq);
+        assert_eq!(timers.io_read16(TM0CNT_L), 105);
+        timers.io_write16(TM0CNT_H, CONTROL_START, 0xFFFF);
+        assert_eq!(timers.io_read16(TM0CNT_L), 100);
+        assert_eq!(timers.io_read16(TM1CNT_H), 0);
     }
 }
