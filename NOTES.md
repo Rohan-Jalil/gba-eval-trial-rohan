@@ -29,6 +29,8 @@ date, what, why.
 | 2026-11-05 | cpu-core added stub `execute_arm`/`execute_thumb` signatures to arm.rs/thumb.rs, authorized by the integrator as a one-off contract edit | The crate had to compile before wave 2 started; the ARM and THUMB branches start from the merged main. |
 | 2026-11-05 | Keypad IRQ is raised once per frame from `Gba::run_frame` (keypad only reports `irq_condition_met()`) | Keys change only between frames; the keypad stays free of IRQ references. A mid-frame KEYCNT write waits until the next frame (marked `ponytail:`). |
 | 2026-11-05 | ppu-basic review follow-ups deferred to Phase 3: BG tile fetches must not reach OBJ VRAM (>= 0x10000); a DISPSTAT write that makes LYC match does not raise the IRQ; `bg_mode()` helper; line-length tidy | Minor; none affects the Phase 1 gate. |
+| 2026-11-05 | MSR writes PSR bits 24-31 (f field) and 0-7 (c field) only; bits 8-23 are never written. CPSR T is protected; SPSR T is writable | gbatek PSR Transfer allows changing the unused flag-field bits but no other reserved bits; an exception handler sets SPSR.T to choose its return state. |
+| 2026-11-05 | THUMB guesses, to be checked on jsmolka thumb.gba once ARM lands: MUL leaves C unchanged; empty-list STMIA/PUSH stores R15 as $+6; BX with the MSBd bit runs as a plain BX | gbatek says only "C destroyed" for ARMv4 MUL and gives no stored value for an empty list ($+6 mirrors ARM's $+12). |
 
 ## Agent and model usage per phase
 
@@ -40,3 +42,5 @@ date, what, why.
 | 2026-11-05 | 0 | reviewer | claude-opus-5-5 | phase0/skeleton | 1 round: verdict merge, originality clean; 1 major (frame boundary, fixed by the integrator), 6 minor deferred |
 | 2026-11-05 | 1 | ppu-basic | claude-opus-5-5 | phase1/ppu-basic | Merged after 1 review round (merge, originality clean, 7 minor). 14 tests; smoke unchanged (stub CPU) |
 | 2026-11-05 | 1 | cpu-core | claude-opus-5-5 | phase1/cpu-core | Merged after 1 review round (merge, originality clean, 6 minor; follow-ups sent back). 35 tests on main; smoke unchanged |
+| 2026-11-05 | 1 | cpu-core (follow-ups) | claude-opus-5-5 | phase1/cpu-core-fixes | Merged after 1 review round (merge, clean). 39 tests; smoke unchanged |
+| 2026-11-05 | 1 | cpu-thumb | claude-opus-5-5 | phase1/cpu-thumb | Merged after 2 review rounds (round 1: changes needed, Vec allocation on PUSH/POP; round 2: merge, clean). 56 tests on main; ROM scores wait on ARM |
