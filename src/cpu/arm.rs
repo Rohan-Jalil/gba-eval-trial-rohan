@@ -260,8 +260,25 @@ fn execute_multiply_long(cpu: &mut Cpu, opcode: u32) -> u32 {
     if bit(opcode, 20) {
         cpu.set_negative((result >> 63) != 0);
         cpu.set_zero(result == 0);
+        if multiplier_cycles(multiplier, signed) == 4 {
+            cpu.set_carry(long_multiply_carry(multiplicand, multiplier, signed));
+        }
     }
     multiplier_cycles(multiplier, signed) + 1 + accumulate as u32
+}
+
+/// C after a long multiply that used all four multiplier cycles. gbatek only says "C=destroyed";
+/// this rule is fitted to the expected flags shown by the mgba-suite multiply-long test screens:
+/// take the Booth digit of multiplier bits 31-29 (for unsigned, bit 31 counts as +2 instead of
+/// -2), form digit * Rm with negative digits as the one's complement, and C is bit 32.
+// ponytail: C stays unchanged for m < 4 and for MUL/MLA, where no test shows the expected value.
+fn long_multiply_carry(multiplicand: u32, multiplier: u32, signed: bool) -> bool {
+    let top_bit = |index: u32| ((multiplier >> index) & 1) as i64;
+    let bit31_weight = if signed { -2 } else { 2 };
+    let digit = bit31_weight * top_bit(31) + top_bit(30) + top_bit(29);
+    let magnitude = multiplicand as u64 * digit.unsigned_abs();
+    let partial_product = if digit < 0 { !magnitude } else { magnitude };
+    (partial_product >> 32) & 1 != 0
 }
 
 // ---- Memory ----
@@ -510,6 +527,24 @@ mod tests {
         execute_arm(&mut cpu, &mut bus, 0xE0D1_0392); // SMULLS R0,R1,R2,R3
         assert_eq!((cpu.registers[0], cpu.registers[1]), ((-21i32) as u32, 0xFFFF_FFFF));
         assert!(cpu.cpsr & FLAG_NEGATIVE != 0 && cpu.cpsr & FLAG_ZERO == 0);
+    }
+
+    #[test]
+    fn long_multiply_carry_matches_observed_flags() {
+        // (Rm, Rs, signed, expected C) taken from the mgba-suite multiply-long screens.
+        let cases = [
+            (0xFFFF_FFFF, 0xFFFF_FFFF, false, true),
+            (0x8000_0000, 0xFFFF_FFFF, false, false),
+            (0x7FFF_FFFF, 0x7FFF_FFFF, false, false),
+            (0x8000_0001, 0x8000_0000, false, true),
+            (0xFFFF_FFFF, 0x7FFF_FFFF, true, true),
+            (0x7FFF_FFFF, 0x7FFF_FFFF, true, false),
+            (0x0000_0000, 0x8000_0000, true, true),
+            (0xFFFF_FFFF, 0x8000_0001, true, false),
+        ];
+        for (multiplicand, multiplier, signed, expected) in cases {
+            assert_eq!(long_multiply_carry(multiplicand, multiplier, signed), expected, "{multiplicand:X} * {multiplier:X}");
+        }
     }
 
     #[test]
