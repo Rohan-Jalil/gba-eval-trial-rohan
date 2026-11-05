@@ -69,10 +69,62 @@ impl SerialStub {
     }
 }
 
+/// Whether the halfword at `offset` holds a readable register (gbatek: GBA I/O Map, R or R/W).
+/// Write-only registers (scroll, affine, window, DMA address and count, FIFOs) and unused
+/// offsets are not readable.
+fn is_readable_halfword(offset: u32) -> bool {
+    matches!(offset,
+        0x000..=0x00E          // DISPCNT, green swap, DISPSTAT, VCOUNT, BG0CNT-BG3CNT
+        | 0x048 | 0x04A        // WININ, WINOUT
+        | 0x050 | 0x052        // BLDCNT, BLDALPHA
+        | 0x060..=0x064        // SOUND1CNT_L/H/X
+        | 0x068 | 0x06C        // SOUND2CNT_L/H
+        | 0x070..=0x074        // SOUND3CNT_L/H/X
+        | 0x078 | 0x07C        // SOUND4CNT_L/H
+        | 0x080..=0x084        // SOUNDCNT_L/H/X
+        | 0x088                // SOUNDBIAS
+        | 0x090..=0x09E        // WAVE_RAM
+        | 0x0BA | 0x0C6 | 0x0D2 | 0x0DE // DMA0CNT_H-DMA3CNT_H
+        | 0x100..=0x10E        // TM0CNT_L-TM3CNT_H
+        | 0x120..=0x12A        // SIODATA / SIOMULTI0-3, SIOCNT, SIODATA8
+        | 0x130 | 0x132        // KEYINPUT, KEYCNT
+        | 0x134                // RCNT
+        | 0x140                // JOYCNT
+        | 0x150..=0x158        // JOY_RECV, JOY_TRANS, JOYSTAT
+        | 0x200..=0x204        // IE, IF, WAITCNT
+        | 0x208                // IME
+        | 0x300                // POSTFLG (HALTCNT, the high byte, is write-only)
+        | 0x800 | 0x802        // internal memory control
+    )
+}
+
+/// POSTFLG (low byte, readable) and HALTCNT (high byte, write-only).
+const POSTFLG_HALTCNT_OFFSET: u32 = 0x300;
+
+/// Write-only or unused halfwords that gbatek names as reading zero rather than open bus
+/// ("Reading from Unused or Write-Only I/O Ports": 04Ch MOSAIC, 04Eh unused).
+fn reads_as_zero(offset: u32) -> bool {
+    matches!(offset, 0x04C | 0x04E)
+}
+
 impl Bus {
-    /// Route a halfword read to its owner. Unmapped offsets read as 0.
-    // ponytail: unmapped reads return 0, not open bus; Phase 2 integrator adds open bus.
+    /// Halfword read with gbatek's rules for unreadable ports ("Reading from Unused or
+    /// Write-Only I/O Ports"): if the other half of the 32-bit fragment is readable the result is
+    /// 0, otherwise the open-bus value.
     fn io_dispatch_read16(&mut self, offset: u32) -> u16 {
+        if offset == POSTFLG_HALTCNT_OFFSET {
+            self.io_owner_read16(offset) & 0x00FF // HALTCNT (high byte) is write-only
+        } else if is_readable_halfword(offset) {
+            self.io_owner_read16(offset)
+        } else if is_readable_halfword(offset ^ 2) || reads_as_zero(offset) {
+            0
+        } else {
+            (self.open_bus_value() >> ((offset & 2) * 8)) as u16
+        }
+    }
+
+    /// Route a halfword read to its owner.
+    fn io_owner_read16(&mut self, offset: u32) -> u16 {
         if in_range(offset, PPU_RANGE) {
             self.ppu.io_read16(offset)
         } else if in_range(offset, APU_RANGE) {
@@ -107,7 +159,8 @@ impl Bus {
         } else if in_range(offset, SERIAL_LOW_RANGE) || in_range(offset, SERIAL_HIGH_RANGE) {
             self.serial.io_write16(offset, value, mask)
         } else if in_range(offset, SYSTEM_RANGE) {
-            self.irq.io_write16(offset, value, mask)
+            self.irq.io_write16(offset, value, mask);
+            self.note_wait_control_write(offset, value, mask);
         }
     }
 
