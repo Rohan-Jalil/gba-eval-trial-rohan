@@ -38,6 +38,9 @@ const DAC_TO_I16_SHIFT: u32 = 5;
 pub struct Apu {
     registers: PlainRegisters<0x28>,
     psg: psg::Psg,
+    /// Cycles the PSG has not been advanced by yet. The PSG only needs to be current when it is
+    /// mixed or its registers are accessed, so it is stepped in one go at those points.
+    psg_pending_cycles: u32,
     fifos: [fifo::SoundFifo; 2],
     /// Cycles accumulated towards the next output sample.
     cycles_until_sample: u32,
@@ -52,6 +55,7 @@ impl Apu {
         Apu {
             registers,
             psg: psg::Psg::new(),
+            psg_pending_cycles: 0,
             fifos: [fifo::SoundFifo::new(), fifo::SoundFifo::new()],
             cycles_until_sample: 0,
             samples: Vec::with_capacity(MAX_BUFFERED_PAIRS * 2),
@@ -64,13 +68,19 @@ impl Apu {
         BASE_SAMPLE_RATE_HZ << resolution
     }
 
+    /// Cycles of `step` until the next output sample is mixed.
+    pub fn cycles_until_sample(&self) -> u32 {
+        (CPU_CLOCK_HZ / self.sample_rate()).saturating_sub(self.cycles_until_sample)
+    }
+
     /// Advance by `cycles`, appending one stereo pair per output sample period.
     pub fn step(&mut self, cycles: u32) {
         let cycles_per_sample = CPU_CLOCK_HZ / self.sample_rate();
-        self.psg.step(cycles);
+        self.psg_pending_cycles += cycles;
         self.cycles_until_sample += cycles;
         while self.cycles_until_sample >= cycles_per_sample {
             self.cycles_until_sample -= cycles_per_sample;
+            self.catch_up_psg();
             let (left, right) = self.mix_sample();
             if self.samples.len() < MAX_BUFFERED_PAIRS * 2 {
                 self.samples.push(left);
@@ -146,7 +156,14 @@ impl Apu {
         refill_requests
     }
 
+    /// Step the PSG by the cycles deferred since it was last brought up to date. Stepping in one
+    /// call or many gives the same state (its timers only count down), so this changes no output.
+    fn catch_up_psg(&mut self) {
+        self.psg.step(std::mem::take(&mut self.psg_pending_cycles));
+    }
+
     pub fn io_read16(&mut self, offset: u32) -> u16 {
+        self.catch_up_psg();
         if is_psg_offset(offset) {
             return self.psg.io_read16(offset);
         }
@@ -158,6 +175,7 @@ impl Apu {
     }
 
     pub fn io_write16(&mut self, offset: u32, value: u16, mask: u16) {
+        self.catch_up_psg();
         if is_psg_offset(offset) {
             return self.psg.io_write16(offset, value, mask);
         }

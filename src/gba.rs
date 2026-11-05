@@ -48,6 +48,12 @@ impl Gba {
     }
 
     /// Run until the frame boundary (see `FRAME_END_LINE`).
+    ///
+    /// PPU, timers and APU are not stepped after every instruction: their cycles are deferred
+    /// while no event (IRQ, DMA trigger, overflow, output sample) can fall inside them, and IO
+    /// accesses catch them up first (`Bus::catch_up_components`). Stepping a component by a sum
+    /// of cycles gives the same state as stepping it by each part, so the result is the same as
+    /// stepping every instruction; it only costs less.
     pub fn run_frame(&mut self) {
         // Keypad IRQ (gbatek: GBA Keypad Input, KEYCNT). Keys only change between frames.
         // ponytail: checked once per frame; a mid-frame KEYCNT write waits until the next frame.
@@ -57,39 +63,58 @@ impl Gba {
         while self.cycles_until_frame_end > 0 {
             let mut cycles = self.cpu.step(&mut self.bus);
             cycles += dma::run_pending_transfers(&mut self.bus);
-            self.advance_components(cycles);
+            self.scheduler.advance(cycles);
+            self.defer_component_cycles(cycles);
             self.cycles_until_frame_end -= cycles as i64;
         }
+        self.bus.catch_up_components();
         self.cycles_until_frame_end += CYCLES_PER_FRAME as i64;
     }
 
-    /// Advance PPU, timers and APU by `cycles` and route their events.
-    fn advance_components(&mut self, cycles: u32) {
+    /// Add one step's cycles to the deferred total; once an event may be due, advance the
+    /// components by all of it and find the next event.
+    fn defer_component_cycles(&mut self, cycles: u32) {
         let bus = &mut self.bus;
-        self.scheduler.advance(cycles);
-
-        let ppu_events = bus.ppu.step(cycles, &mut bus.irq);
-        if ppu_events.hblank_started {
-            bus.dma.notify_hblank();
+        bus.deferred_component_cycles += cycles;
+        if bus.deferred_component_cycles >= bus.cycles_until_component_event {
+            bus.catch_up_components();
+            bus.cycles_until_component_event = cycles_until_component_event(bus);
         }
-        if ppu_events.vblank_started {
-            bus.dma.notify_vblank();
-        }
+    }
+}
 
-        let timer_overflow_counts = bus.timers.step(cycles, &mut bus.irq);
-        for (timer_index, &overflow_count) in timer_overflow_counts.iter().enumerate() {
-            for _ in 0..overflow_count {
-                let fifo_requests = bus.apu.on_timer_overflow(timer_index);
-                for fifo_index in 0..2 {
-                    if fifo_requests & (1 << fifo_index) != 0 {
-                        bus.dma.notify_fifo_request(fifo_index);
-                    }
+/// Cycles until the earliest point at which a component does something visible outside itself:
+/// a PPU HBlank or line start, a timer overflow, or the next APU output sample.
+fn cycles_until_component_event(bus: &Bus) -> u32 {
+    bus.ppu
+        .cycles_until_line_event()
+        .min(bus.timers.cycles_until_overflow())
+        .min(bus.apu.cycles_until_sample())
+}
+
+/// Advance PPU, timers and APU by `cycles` and route their events.
+pub(crate) fn advance_components(bus: &mut Bus, cycles: u32) {
+    let ppu_events = bus.ppu.step(cycles, &mut bus.irq);
+    if ppu_events.hblank_started {
+        bus.dma.notify_hblank();
+    }
+    if ppu_events.vblank_started {
+        bus.dma.notify_vblank();
+    }
+
+    let timer_overflow_counts = bus.timers.step(cycles, &mut bus.irq);
+    for (timer_index, &overflow_count) in timer_overflow_counts.iter().enumerate() {
+        for _ in 0..overflow_count {
+            let fifo_requests = bus.apu.on_timer_overflow(timer_index);
+            for fifo_index in 0..2 {
+                if fifo_requests & (1 << fifo_index) != 0 {
+                    bus.dma.notify_fifo_request(fifo_index);
                 }
             }
         }
-
-        bus.apu.step(cycles);
     }
+
+    bus.apu.step(cycles);
 }
 
 #[cfg(test)]
