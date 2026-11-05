@@ -176,7 +176,15 @@ impl Ppu {
             line_cycle: 0,
             // VCOUNT 0 equals the power-on LYC 0, so the match flag starts set.
             dispstat: DISPSTAT_VCOUNT_FLAG,
-            registers: PlainRegisters::new(IO_START),
+            registers: {
+                // BG2/BG3 PA and PD power on as 1.0 (identity): bitmap-mode ROMs that never
+                // write them still show an unscaled picture. gbatek gives no reset value.
+                let mut registers = PlainRegisters::new(IO_START);
+                for offset in [BG2PA, BG2PA + 6, BG2PA + 0x10, BG2PA + 0x16] {
+                    registers.write(offset, 0x100, 0xFFFF);
+                }
+                registers
+            },
             affine_reference: [(0, 0); 2],
         }
     }
@@ -435,7 +443,7 @@ mod tests {
         assert_eq!(bus.ppu.affine_reference_point(0), (-256, 0));
         let mut irq = crate::irq::Irq::new();
         bus.ppu.step(CYCLES_PER_LINE, &mut irq); // line 0 drawn, point advanced
-        assert_eq!(bus.ppu.affine_reference_point(0), (-128, 0));
+        assert_eq!(bus.ppu.affine_reference_point(0), (-128, 256), "PD powers on as 1.0");
     }
 
     const RED: u16 = 0x001F;
@@ -458,6 +466,7 @@ mod tests {
         let mut bus = Bus::new(&[]);
         bus.write16(0x0400_0000, 0x0403); // mode 3, BG2 on
         bus.write16(0x0600_0000 + (10 * 240 + 5) * 2, GREEN);
+        bus.write32(0x0400_002C, 10 << 8); // BG2Y: the internal point as it stands on line 10
         bus.ppu.render_line(10);
         assert_eq!(pixel(&bus, 5, 10), 0xFF00_FF00);
         assert_eq!(pixel(&bus, 6, 10), BLACK);
@@ -487,6 +496,7 @@ mod tests {
         bus.write16(0x0500_0000, BLUE);
         bus.write16(0x0600_0000 + (2 * 160 + 159) * 2, RED);
         bus.write16(0x0400_0000, 0x0405);
+        bus.write32(0x0400_002C, 2 << 8); // BG2Y: the internal point as it stands on line 2
         bus.ppu.render_line(2);
         assert_eq!(pixel(&bus, 159, 2), bgr555_to_abgr8888(RED));
         assert_eq!(pixel(&bus, 160, 2), bgr555_to_abgr8888(BLUE));
