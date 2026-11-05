@@ -32,13 +32,10 @@ fn read_operand(cpu: &Cpu, index: usize, extra_pc_offset: u32) -> u32 {
 pub(super) fn execute_arm(cpu: &mut Cpu, bus: &mut Bus, opcode: u32) -> u32 {
     match (opcode >> 25) & 0b111 {
         0b000 => execute_group_zero(cpu, bus, opcode),
-        0b001 => {
-            if is_psr_transfer(opcode) {
-                execute_psr_transfer(cpu, opcode)
-            } else {
-                execute_data_processing(cpu, opcode)
-            }
-        }
+        // MRS has no immediate form: I=1 in the PSR slot with bit 21 = 0 is undefined.
+        0b001 if is_psr_transfer(opcode) && !bit(opcode, 21) => undefined_instruction(cpu),
+        0b001 if is_psr_transfer(opcode) => execute_psr_transfer(cpu, opcode),
+        0b001 => execute_data_processing(cpu, opcode),
         0b010 => execute_single_data_transfer(cpu, bus, opcode),
         0b011 if bit(opcode, 4) => undefined_instruction(cpu),
         0b011 => execute_single_data_transfer(cpu, bus, opcode),
@@ -60,11 +57,16 @@ fn execute_group_zero(cpu: &mut Cpu, bus: &mut Bus, opcode: u32) -> u32 {
         return execute_branch_and_exchange(cpu, opcode);
     }
     if opcode & 0xF0 == 0x90 {
-        return match (opcode >> 23) & 0b11 {
-            0b00 => execute_multiply(cpu, opcode),
-            0b01 => execute_multiply_long(cpu, opcode),
-            0b10 if (opcode >> 20) & 0b11 == 0 => execute_swap(cpu, bus, opcode),
-            _ => undefined_instruction(cpu),
+        // Bits 7-4 = 1001: MUL/MLA (bits 27-22 = 000000), MULL/MLAL (bits 27-23 = 00001),
+        // SWP/SWPB (bits 27-23 = 00010, bits 21-20 = 00); anything else is undefined.
+        return if opcode & 0x0FC0_0000 == 0 {
+            execute_multiply(cpu, opcode)
+        } else if opcode & 0x0F80_0000 == 0x0080_0000 {
+            execute_multiply_long(cpu, opcode)
+        } else if opcode & 0x0FB0_0000 == 0x0100_0000 {
+            execute_swap(cpu, bus, opcode)
+        } else {
+            undefined_instruction(cpu)
         };
     }
     if bit(opcode, 7) && bit(opcode, 4) {
@@ -112,30 +114,37 @@ fn execute_branch_and_exchange(cpu: &mut Cpu, opcode: u32) -> u32 {
 
 // ---- Data processing ----
 
+/// Op2 of an ALU instruction after the barrel shifter.
+struct SecondOperand {
+    value: u32,
+    shifter_carry: bool,
+    /// Extra offset added to R15 reads: 4 when shifting by register (PC+12), else 0.
+    extra_pc_offset: u32,
+}
+
 /// Second operand of an ALU op and the shifter carry-out (gbatek: ARM Opcodes: Data Processing
-/// (ALU), "Second Operand"). Also returns the extra PC offset (4 when shifting by register).
-fn alu_second_operand(cpu: &Cpu, opcode: u32) -> (u32, bool, u32) {
-    if bit(opcode, 25) {
-        let (value, carry) = alu::rotated_immediate(opcode & 0xFF, (opcode >> 8) & 0xF, cpu.carry());
-        return (value, carry, 0);
-    }
-    let shift_type = ShiftType::from_bits((opcode >> 5) & 0b11);
-    if bit(opcode, 4) {
-        let operand = read_operand(cpu, register_field(opcode, 0), 4);
-        let shift_register = cpu.registers[register_field(opcode, 8)];
-        let (value, carry) = alu::shift_by_register(shift_type, operand, shift_register, cpu.carry());
-        (value, carry, 4)
+/// (ALU), "Second Operand").
+fn alu_second_operand(cpu: &Cpu, opcode: u32) -> SecondOperand {
+    let ((value, shifter_carry), extra_pc_offset) = if bit(opcode, 25) {
+        (alu::rotated_immediate(opcode & 0xFF, (opcode >> 8) & 0xF, cpu.carry()), 0)
     } else {
-        let operand = read_operand(cpu, register_field(opcode, 0), 0);
-        let (value, carry) = alu::shift_by_immediate(shift_type, operand, (opcode >> 7) & 0x1F, cpu.carry());
-        (value, carry, 0)
-    }
+        let shift_type = ShiftType::from_bits((opcode >> 5) & 0b11);
+        if bit(opcode, 4) {
+            let operand = read_operand(cpu, register_field(opcode, 0), 4);
+            let shift_register = cpu.registers[register_field(opcode, 8)];
+            (alu::shift_by_register(shift_type, operand, shift_register, cpu.carry()), 4)
+        } else {
+            let operand = read_operand(cpu, register_field(opcode, 0), 0);
+            (alu::shift_by_immediate(shift_type, operand, (opcode >> 7) & 0x1F, cpu.carry()), 0)
+        }
+    };
+    SecondOperand { value, shifter_carry, extra_pc_offset }
 }
 
 /// The 16 ALU opcodes (gbatek: ARM Opcodes: Data Processing (ALU)). Internal cycles: 1I for a
 /// shift by register.
 fn execute_data_processing(cpu: &mut Cpu, opcode: u32) -> u32 {
-    let (second, shifter_carry, extra_pc_offset) = alu_second_operand(cpu, opcode);
+    let SecondOperand { value: second, shifter_carry, extra_pc_offset } = alu_second_operand(cpu, opcode);
     let first = read_operand(cpu, register_field(opcode, 16), extra_pc_offset);
     let alu_opcode = (opcode >> 21) & 0xF;
     let carry = cpu.carry();
@@ -238,7 +247,7 @@ fn execute_multiply(cpu: &mut Cpu, opcode: u32) -> u32 {
 }
 
 /// UMULL, UMLAL, SMULL, SMLAL: 64-bit product in RdHi:RdLo (gbatek: ARM Opcodes: Multiply Long).
-/// Flags: N and Z of the 64-bit result. Internal cycles: m+1 (MULL) or m+2 (MLAL).
+/// Flags: N and Z of the 64-bit result; C and V unchanged. Internal cycles: m+1 (MULL) or m+2 (MLAL).
 fn execute_multiply_long(cpu: &mut Cpu, opcode: u32) -> u32 {
     let signed = bit(opcode, 22);
     let accumulate = bit(opcode, 21);
@@ -260,25 +269,9 @@ fn execute_multiply_long(cpu: &mut Cpu, opcode: u32) -> u32 {
     if bit(opcode, 20) {
         cpu.set_negative((result >> 63) != 0);
         cpu.set_zero(result == 0);
-        if multiplier_cycles(multiplier, signed) == 4 {
-            cpu.set_carry(long_multiply_carry(multiplicand, multiplier, signed));
-        }
+        // gbatek: "C=destroyed, V=destroyed???" on ARMv4; both are left unchanged.
     }
     multiplier_cycles(multiplier, signed) + 1 + accumulate as u32
-}
-
-/// C after a long multiply that used all four multiplier cycles. gbatek only says "C=destroyed";
-/// this rule is fitted to the expected flags shown by the mgba-suite multiply-long test screens:
-/// take the Booth digit of multiplier bits 31-29 (for unsigned, bit 31 counts as +2 instead of
-/// -2), form digit * Rm with negative digits as the one's complement, and C is bit 32.
-// ponytail: C stays unchanged for m < 4 and for MUL/MLA, where no test shows the expected value.
-fn long_multiply_carry(multiplicand: u32, multiplier: u32, signed: bool) -> bool {
-    let top_bit = |index: u32| ((multiplier >> index) & 1) as i64;
-    let bit31_weight = if signed { -2 } else { 2 };
-    let digit = bit31_weight * top_bit(31) + top_bit(30) + top_bit(29);
-    let magnitude = multiplicand as u64 * digit.unsigned_abs();
-    let partial_product = if digit < 0 { !magnitude } else { magnitude };
-    (partial_product >> 32) & 1 != 0
 }
 
 // ---- Memory ----
@@ -340,6 +333,11 @@ fn execute_single_data_transfer(cpu: &mut Cpu, bus: &mut Bus, opcode: u32) -> u3
     }
 }
 
+/// Halfword-transfer opcode field, bits 5-6 (gbatek: ARM Opcodes: Memory: Halfword ...).
+const HALFWORD_UNSIGNED: u32 = 1; // LDRH / STRH
+const SIGNED_BYTE: u32 = 2; // LDRSB (LDRD when storing, ARMv5TE)
+const HALFWORD_SIGNED: u32 = 3; // LDRSH (STRD when storing, ARMv5TE)
+
 /// STRH, LDRH, LDRSB, LDRSH (gbatek: ARM Opcodes: Memory: Halfword, Doubleword, and Signed Data
 /// Transfer), with the ARMv4 misaligned quirks from "ARM CPU Memory Alignments". 1I for loads.
 fn execute_halfword_transfer(cpu: &mut Cpu, bus: &mut Bus, opcode: u32) -> u32 {
@@ -355,9 +353,9 @@ fn execute_halfword_transfer(cpu: &mut Cpu, bus: &mut Bus, opcode: u32) -> u32 {
 
     if bit(opcode, 20) {
         let value = match transfer_kind {
-            1 => load_halfword_unsigned(bus, address),
-            2 => bus.read8(address) as i8 as u32,
-            3 => load_halfword_signed(bus, address),
+            HALFWORD_UNSIGNED => load_halfword_unsigned(bus, address),
+            SIGNED_BYTE => bus.read8(address) as i8 as u32,
+            HALFWORD_SIGNED => load_halfword_signed(bus, address),
             _ => return undefined_instruction(cpu), // SWP space; never reached via decode
         };
         if let Some(new_base) = written_back_base {
@@ -482,7 +480,7 @@ fn execute_block_data_transfer(cpu: &mut Cpu, bus: &mut Bus, opcode: u32) -> u32
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cpu::{FLAG_CARRY, FLAG_NEGATIVE, FLAG_ZERO, MODE_IRQ, MODE_SYSTEM};
+    use crate::cpu::{FLAG_CARRY, FLAG_NEGATIVE, FLAG_ZERO, MODE_IRQ, MODE_SUPERVISOR, MODE_SYSTEM, MODE_UNDEFINED};
 
     const IWRAM: u32 = 0x0300_0000;
 
@@ -527,24 +525,6 @@ mod tests {
         execute_arm(&mut cpu, &mut bus, 0xE0D1_0392); // SMULLS R0,R1,R2,R3
         assert_eq!((cpu.registers[0], cpu.registers[1]), ((-21i32) as u32, 0xFFFF_FFFF));
         assert!(cpu.cpsr & FLAG_NEGATIVE != 0 && cpu.cpsr & FLAG_ZERO == 0);
-    }
-
-    #[test]
-    fn long_multiply_carry_matches_observed_flags() {
-        // (Rm, Rs, signed, expected C) taken from the mgba-suite multiply-long screens.
-        let cases = [
-            (0xFFFF_FFFF, 0xFFFF_FFFF, false, true),
-            (0x8000_0000, 0xFFFF_FFFF, false, false),
-            (0x7FFF_FFFF, 0x7FFF_FFFF, false, false),
-            (0x8000_0001, 0x8000_0000, false, true),
-            (0xFFFF_FFFF, 0x7FFF_FFFF, true, true),
-            (0x7FFF_FFFF, 0x7FFF_FFFF, true, false),
-            (0x0000_0000, 0x8000_0000, true, true),
-            (0xFFFF_FFFF, 0x8000_0001, true, false),
-        ];
-        for (multiplicand, multiplier, signed, expected) in cases {
-            assert_eq!(long_multiply_carry(multiplicand, multiplier, signed), expected, "{multiplicand:X} * {multiplier:X}");
-        }
     }
 
     #[test]
@@ -593,5 +573,82 @@ mod tests {
         assert!(cpu.in_thumb_state());
         assert_eq!(cpu.registers[PROGRAM_COUNTER], 0x0800_0100);
     }
-}
 
+    #[test]
+    fn psr_transfer() {
+        let (mut cpu, mut bus) = setup();
+        execute_arm(&mut cpu, &mut bus, 0xE328_F20F); // MSR CPSR_f,#0xF0000000
+        assert_eq!(cpu.cpsr, 0xF000_0000 | MODE_SYSTEM);
+        execute_arm(&mut cpu, &mut bus, 0xE10F_0000); // MRS R0,CPSR
+        assert_eq!(cpu.registers[0], 0xF000_0000 | MODE_SYSTEM);
+        cpu.set_cpsr(MODE_IRQ);
+        cpu.registers[1] = 0x2000_001F;
+        execute_arm(&mut cpu, &mut bus, 0xE169_F001); // MSR SPSR_fc,R1
+        execute_arm(&mut cpu, &mut bus, 0xE14F_2000); // MRS R2,SPSR
+        assert_eq!(cpu.registers[2], 0x2000_001F);
+        assert_eq!(cpu.mode(), MODE_IRQ);
+    }
+
+    #[test]
+    fn swap_word_and_byte() {
+        let (mut cpu, mut bus) = setup();
+        bus.write32(IWRAM, 0x4433_2211);
+        cpu.registers[1] = 0xAABB_CCDD;
+        cpu.registers[2] = IWRAM;
+        execute_arm(&mut cpu, &mut bus, 0xE102_0091); // SWP R0,R1,[R2]
+        assert_eq!((cpu.registers[0], bus.read32(IWRAM)), (0x4433_2211, 0xAABB_CCDD));
+        cpu.registers[1] = 0x77;
+        execute_arm(&mut cpu, &mut bus, 0xE142_0091); // SWPB R0,R1,[R2]
+        assert_eq!((cpu.registers[0], bus.read32(IWRAM)), (0xDD, 0xAABB_CC77));
+    }
+
+    #[test]
+    fn store_halfword() {
+        let (mut cpu, mut bus) = setup();
+        cpu.registers[1] = 0x1234_5678;
+        cpu.registers[2] = IWRAM;
+        execute_arm(&mut cpu, &mut bus, 0xE1C2_10B2); // STRH R1,[R2,#2]
+        assert_eq!(bus.read32(IWRAM), 0x5678_0000);
+        assert_eq!(cpu.registers[2], IWRAM, "no write-back");
+    }
+
+    #[test]
+    fn single_transfer_write_back() {
+        let (mut cpu, mut bus) = setup();
+        bus.write32(IWRAM + 4, 0xCAFE_F00D);
+        cpu.registers[1] = IWRAM;
+        execute_arm(&mut cpu, &mut bus, 0xE5B1_0004); // LDR R0,[R1,#4]!
+        assert_eq!((cpu.registers[0], cpu.registers[1]), (0xCAFE_F00D, IWRAM + 4));
+        cpu.registers[1] = IWRAM;
+        execute_arm(&mut cpu, &mut bus, 0xE5B1_1004); // LDR R1,[R1,#4]!: loaded value wins
+        assert_eq!(cpu.registers[1], 0xCAFE_F00D);
+        cpu.registers[1] = IWRAM + 8;
+        execute_arm(&mut cpu, &mut bus, 0xE481_1004); // STR R1,[R1],#4: stores the old base
+        assert_eq!((bus.read32(IWRAM + 8), cpu.registers[1]), (IWRAM + 8, IWRAM + 12));
+    }
+
+    #[test]
+    fn test_op_with_pc_destination_restores_cpsr() {
+        let (mut cpu, mut bus) = setup();
+        cpu.set_cpsr(MODE_IRQ);
+        cpu.set_spsr(MODE_SYSTEM | FLAG_CARRY);
+        execute_arm(&mut cpu, &mut bus, 0xE150_F000); // CMP R0,R0 with Rd=R15
+        assert_eq!(cpu.cpsr, MODE_SYSTEM | FLAG_CARRY);
+        assert_eq!(cpu.registers[PROGRAM_COUNTER], 0x0800_0008, "PC not written");
+    }
+
+    #[test]
+    fn software_interrupt_and_undefined_entry() {
+        let (mut cpu, mut bus) = setup();
+        execute_arm(&mut cpu, &mut bus, 0xEF00_0000); // SWI 0
+        assert_eq!(cpu.mode(), MODE_SUPERVISOR);
+        assert_eq!((cpu.registers[14], cpu.registers[PROGRAM_COUNTER]), (0x0800_0004, 0x08));
+        for opcode in [0xE7F0_00F0, 0xE30F_0000, 0xE040_0091] {
+            // LDR space with bit 4, immediate "MRS", bits 27-22 = 000001 with 1001
+            let (mut cpu, mut bus) = setup();
+            execute_arm(&mut cpu, &mut bus, opcode);
+            assert_eq!(cpu.mode(), MODE_UNDEFINED, "{opcode:08X}");
+            assert_eq!(cpu.registers[PROGRAM_COUNTER], 0x04);
+        }
+    }
+}
