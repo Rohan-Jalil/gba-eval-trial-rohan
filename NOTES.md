@@ -51,6 +51,8 @@ date, what, why.
 | 2026-11-05 | IO reads apply per-register readable-bit masks from gbatek's bit tables in io.rs (`readable_bits`), so unused and write-only bits read 0. MOSAIC (0x04C) and 0x04E read as open bus, contrary to gbatek's example | mgba-io-read went from 109/130 to 130/130. The reference expects open bus at 0x04C/0x04E; one central table keeps every owner's contract unchanged. |
 | 2026-11-05 | Integrator edited the stub src/apu/mod.rs: SOUNDCNT_X writes are masked to bit 7 (bits 0-3 are channel status set by the APU). The Phase 4 fifo-mixer worker inherits this and must keep the write mask | mgba-io-read checks it; the APU had no owner during Phase 2. |
 | 2026-11-05 | DMA: SRAM stays DMA-readable, contrary to gbatek "Game Pak DMA". Game Pak ROM sources always increment (gbatek "ROM Chip"). An unreadable source repeats the channel's last value. First unit N, the rest S. The start delay is one CPU step. Each transfer runs to completion (no mid-transfer pre-emption) | mgba-dma needs the SRAM rows (1184 vs 1256 without them). nba-hw dma-latch passes. The remaining nba-hw DMA timing gaps (start-delay 17/20, force-nseq 76/88, burst) need a cycle-based scheduler (Phase 5). |
+| 2026-11-05 | Phase 2 milestone: overall 0.4326 (replay 0.4673, procedural 0.7611, audio 0). All 16 procedural tests 1.0 except mgba-multiply-long (accepted loss). Replays: chip-advance 0.93, waimanu 0.74, bulletgba 0.68, celeste 0.54, heartwrench 0.54, piugba 0.42, varooom 0.15, goodboy 0.08, spout 0.06, collie-defense 0.01 | Gate met (procedural >= 0.6, ceiling 0.8). Overall up from 0.1303. Lowest replays wait on sprites/affine (Phase 3), sound (Phase 4) and save/GPIO/timing (Phase 5). |
+| 2026-11-05 | irq.rs ownership returns to the integrator after the Phase 2 merge | As logged at hand-over. |
 
 ## Agent and model usage per phase
 
@@ -71,3 +73,4 @@ date, what, why.
 | 2026-11-05 | 2 | irq-halt | claude-opus-5-5 | phase2/irq-halt | Merged after 1 review round (merge, clean, 7 minor). Unblocks mgba-shifter/carry once DMA lands; tonc-snd1 video 0.992 |
 | 2026-11-05 | 2 | dma | claude-opus-5-5 | phase2/dma | Merged after 2 review rounds (round 1: changes needed, N/S timing and readable regions; round 2: merge, clean). dma-priority 1.0, mgba-dma 1.0 |
 | 2026-11-05 | 2 | executor (integrator) | claude-opus-5-5 | main | bus.rs/io.rs memory work (wait states, open bus, SRAM, VRAM, IO masks), 2 review rounds on its own diff (round 1: changes needed; round 2: merge, clean). memory, mgba-io-read, ppu-vram-mirror 1.0 |
+| 2026-11-05 | 2 | reviewer (x9, fresh each time) | claude-opus-5-5 | phase2/* + main | irq-halt 1, timers 2, dma 2, integrator bus/io 2 rounds (plus 2 review passes inside fix rounds) |
