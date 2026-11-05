@@ -495,7 +495,8 @@ impl Psg {
         }
     }
 
-    /// NRx1: a write of the length byte loads the length counter (gbatek: SOUND1CNT_H bits 0-5).
+    /// NRx1/NRx2: a write of the length byte loads the length counter (gbatek: SOUND1CNT_H bits
+    /// 0-5), and the channel stops when its envelope can never sound (bits 11-15 zero).
     fn write_tone_duty_envelope(&mut self, offset: u32, value: u16, low_byte_written: bool) {
         // The register already holds the merged value, so a length-byte-only write keeps the
         // envelope bits it had.
@@ -646,6 +647,13 @@ mod tests {
         psg.io_write16(SOUND2CNT_L, 0x0005, 0x00FF); // length byte only: keeps playing
         assert_eq!(psg.active_channels(), 0b0010);
         psg.io_write16(SOUND2CNT_L, 0x0000, 0xFFFF); // writing a silent envelope stops it
+        assert_eq!(psg.active_channels(), 0);
+
+        psg.io_write16(SOUND4CNT_L, 0xF000, 0xFFFF); // noise: volume 15
+        psg.io_write16(SOUND4CNT_H, TRIGGER_BIT, 0xFF00);
+        psg.io_write16(SOUND4CNT_L, 0x0003, 0x00FF); // length byte only: keeps playing
+        assert_eq!(psg.active_channels(), 0b1000);
+        psg.io_write16(SOUND4CNT_L, 0x0000, 0xFFFF);
         assert_eq!(psg.active_channels(), 0);
     }
 
