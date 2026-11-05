@@ -85,6 +85,7 @@ date, what, why.
 | 2026-11-06 | Deferred component stepping: PPU, timers and APU are caught up only when the accumulated cycles reach the next possible event (line/HBlank, timer overflow, APU sample) or on any IO access, instead of after every instruction. The PSG steps lazily. `Bus::catch_up_components` calls `gba::advance_components`, so bus now depends on gba (a contract change). Rule: code reading PPU/timer/APU timing state outside IO must add `bus.deferred_component_cycles` | Stepping after every instruction was ~75% of fuel. Output is identical by construction; the worker hashed every frame and sample on all replays, the reviewer diffed 76 ROMs byte for byte, and the full suite at 250M matched phase 5 exactly. Worst frame on the worker's wasm fuel meter: 342M to 108M (meter reads 17-29% low). |
 | 2026-11-06 | Reset determinism test: `lib.rs tests::reset_reproduces_load_rom_exactly` hashes 100 frames of framebuffer and audio after load and after `emu_reset` (heartwrench from the corpus, skips if missing) | PLAN.md Phase 6. |
 | 2026-11-06 | perf review minors: renamed the APU field to `cycles_since_sample`; deferral fields made `pub(crate)`. Deferred: unit tests for the three cycles-until-event helpers, a louder skip in the determinism test | Minor. |
+| 2026-11-06 | Phase 6 milestone: overall 0.8476 (replay 0.8648, procedural 0.7611, audio 0.8827), identical to phase 5 (max per-test difference 0.0). Gate met: scores within 0.005; reset determinism test passes; the full suite at 250M (2x headroom) has 0 traps and the same overall | Performance and hardening done with no behaviour change. |
 
 ## Agent and model usage per phase
 
@@ -121,3 +122,5 @@ date, what, why.
 | 2026-11-06 | 5 | reviewer (x3, fresh each time) | claude-opus-5-5 | phase5/* + main | integrator DMA fix 2 rounds, heartwrench SRAM 1 round; no grading |
 | 2026-11-06 | 5 | executor (integrator) | claude-opus-5-5 | main | Triage with video, DISPCNT and DMA fixes, hard stops on the timing workers, grading-budget rule, phase-5 milestone 0.8476 |
 | 2026-11-06 | 6 | perf-hardening | claude-opus-5-5 | phase6/perf-hardening | Merged after 1 review round (merge, clean). 1 of 5 grader runs used; no 250M trap; scores identical to phase 5 |
+| 2026-11-06 | 6 | reviewer (x1, fresh) | claude-opus-5-5 | phase6/perf-hardening | merge, clean; own byte-for-byte diff of 76 ROMs |
+| 2026-11-06 | 6 | executor (integrator) | claude-opus-5-5 | main | Fuel baseline at 250M/125M, merge, review minors, 500M milestone + 250M full-suite gate check |
