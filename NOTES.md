@@ -37,6 +37,8 @@ date, what, why.
 | 2026-11-05 | cpu-arm review round 2 minors deferred: undefined for non-zero bits 11-4 on the MSR register form; mnemonic comments on ALU opcodes; named shift-by-register cycle flag; rename `significant` | Minor; no gate impact. |
 | 2026-11-05 | Human decision: Phase 1 closes with 6/9 CPU gate tests at 1.0 (all armwrestler pages) plus jsmolka arm.gba and thumb.gba passing. mgba-shifter, mgba-carry and mgba-multiply-long move to the Phase 2 gate | mgba-suite waits for an interrupt and loads its font by DMA, both Phase 2 work. In the ARM worker's local IRQ+DMA test, shifter (140/140) and carry (93/93) pass. |
 | 2026-11-05 | Human decision: accept losing mgba-multiply-long. Multiplies keep C unchanged and no carry model is derived | No gbatek source for the rule, and the fitted version raised an originality concern. Cost is about 0.35 x 1/9 of the cpu subsystem, roughly 0.008 overall. |
+| 2026-11-05 | Phase 1 milestone: overall 0.1303 (replay 0.1143, procedural 0.3083, audio 0). CPU tests 6/6 armwrestler at 1.0, memory 1.0, tonc-snd1 video 0.976. Replays 0.0001-0.09, mostly waiting on IRQ/timers/DMA (Phase 2) and sprites (Phase 3) | First recorded milestone; baseline to beat is 0.5345. |
+| 2026-11-05 | Reference shows white (forced blank) at key-demo frame 0 where we show black | Likely the BIOS/boot DISPCNT state during the hidden frames; check in Phase 2/3 if early-frame replay scores suffer. |
 
 ## Agent and model usage per phase
 
@@ -51,3 +53,5 @@ date, what, why.
 | 2026-11-05 | 1 | cpu-core (follow-ups) | claude-opus-5-5 | phase1/cpu-core-fixes | Merged after 1 review round (merge, clean). 39 tests; smoke unchanged |
 | 2026-11-05 | 1 | cpu-thumb | claude-opus-5-5 | phase1/cpu-thumb | Merged after 2 review rounds (round 1: changes needed, Vec allocation on PUSH/POP; round 2: merge, clean). 56 tests on main; ROM scores wait on ARM |
 | 2026-11-05 | 1 | cpu-arm | claude-opus-5-5 | phase1/cpu-arm | Merged after 2 review rounds (round 1: originality concern on the fitted multiply-carry rule, removed; round 2: merge, clean). aw-arm-* 1.0; jsmolka arm.gba passes |
+| 2026-11-05 | 1 | reviewer (x6, fresh each time) | claude-opus-5-5 | phase1/* | ppu-basic 1, cpu-core 1, cpu-core-fixes 1, cpu-thumb 2, cpu-arm 2 rounds |
+| 2026-11-05 | 1 | executor (integrator) | claude-opus-5-5 | main | Keypad IRQ wiring, 5 hidden boot frames, gate run, phase-1 milestone 0.1303 |
