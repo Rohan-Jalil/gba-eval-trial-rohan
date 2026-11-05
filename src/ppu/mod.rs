@@ -185,6 +185,9 @@ impl Ppu {
                 for offset in [BG2PA, BG2PA + 6, BG2PA + 0x10, BG2PA + 0x16] {
                     registers.write(offset, 0x100, 0xFFFF);
                 }
+                // DISPCNT powers on with forced blank set (white screen) until the game clears
+                // it; measured from the reference's first frames, gbatek gives no reset value.
+                registers.write(DISPCNT, DISPCNT_FORCED_BLANK, 0xFFFF);
                 registers
             },
             affine_reference: [(0, 0); 2],
