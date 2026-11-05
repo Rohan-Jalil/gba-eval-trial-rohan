@@ -132,6 +132,7 @@ impl Bus {
         } else if in_range(offset, DMA_RANGE) {
             self.dma.io_read16(offset)
         } else if in_range(offset, TIMER_RANGE) {
+            self.timers.catch_up(self.access_cycles, &mut self.irq);
             self.timers.io_read16(offset)
         } else if in_range(offset, KEYPAD_RANGE) {
             self.keypad.io_read16(offset)
@@ -153,6 +154,7 @@ impl Bus {
         } else if in_range(offset, DMA_RANGE) {
             self.dma.io_write16(offset, value, mask)
         } else if in_range(offset, TIMER_RANGE) {
+            self.timers.catch_up(self.access_cycles, &mut self.irq);
             self.timers.io_write16(offset, value, mask)
         } else if in_range(offset, KEYPAD_RANGE) {
             self.keypad.io_write16(offset, value, mask)

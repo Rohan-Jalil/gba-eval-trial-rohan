@@ -76,15 +76,14 @@ impl Gba {
             bus.dma.notify_vblank();
         }
 
-        let overflowed_timers = bus.timers.step(cycles, &mut bus.irq);
-        for timer_index in 0..4 {
-            if overflowed_timers & (1 << timer_index) == 0 {
-                continue;
-            }
-            let fifo_requests = bus.apu.on_timer_overflow(timer_index);
-            for fifo_index in 0..2 {
-                if fifo_requests & (1 << fifo_index) != 0 {
-                    bus.dma.notify_fifo_request(fifo_index);
+        let timer_overflow_counts = bus.timers.step(cycles, &mut bus.irq);
+        for (timer_index, &overflow_count) in timer_overflow_counts.iter().enumerate() {
+            for _ in 0..overflow_count {
+                let fifo_requests = bus.apu.on_timer_overflow(timer_index);
+                for fifo_index in 0..2 {
+                    if fifo_requests & (1 << fifo_index) != 0 {
+                        bus.dma.notify_fifo_request(fifo_index);
+                    }
                 }
             }
         }
