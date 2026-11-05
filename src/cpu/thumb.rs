@@ -231,23 +231,20 @@ enum Transfer {
 /// (1I for loads, none for stores).
 fn transfer_single(cpu: &mut Cpu, bus: &mut Bus, transfer: Transfer, register: usize, address: u32) -> u32 {
     let value = cpu.registers[register];
-    let loaded = match transfer {
-        Transfer::StoreWord => return store(|| bus.write32(address & !3, value)),
-        Transfer::StoreHalfword => return store(|| bus.write16(address & !1, value as u16)),
-        Transfer::StoreByte => return store(|| bus.write8(address, value as u8)),
-        Transfer::LoadWord => load_word_rotated(bus, address),
-        Transfer::LoadHalfword => load_halfword_unsigned(bus, address),
-        Transfer::LoadByte => bus.read8(address) as u32,
-        Transfer::LoadSignedHalfword => load_halfword_signed(bus, address),
-        Transfer::LoadSignedByte => load_byte_signed(bus, address),
-    };
-    cpu.registers[register] = loaded;
-    1
-}
-
-fn store(write: impl FnOnce()) -> u32 {
-    write();
-    0
+    match transfer {
+        Transfer::StoreWord => bus.write32(address & !3, value),
+        Transfer::StoreHalfword => bus.write16(address & !1, value as u16),
+        Transfer::StoreByte => bus.write8(address, value as u8),
+        Transfer::LoadWord => cpu.registers[register] = load_word_rotated(bus, address),
+        Transfer::LoadHalfword => cpu.registers[register] = load_halfword_unsigned(bus, address),
+        Transfer::LoadByte => cpu.registers[register] = bus.read8(address) as u32,
+        Transfer::LoadSignedHalfword => cpu.registers[register] = load_halfword_signed(bus, address),
+        Transfer::LoadSignedByte => cpu.registers[register] = load_byte_signed(bus, address),
+    }
+    match transfer {
+        Transfer::StoreWord | Transfer::StoreHalfword | Transfer::StoreByte => 0,
+        _ => 1, // loads spend 1I
+    }
 }
 
 /// Rb + Ro for THUMB.7 and THUMB.8.
