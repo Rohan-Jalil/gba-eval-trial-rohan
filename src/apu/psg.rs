@@ -112,6 +112,14 @@ impl Envelope {
     }
 }
 
+/// Whether an envelope setting (bits 11-15: direction and initial volume) can ever make sound.
+/// Initial volume 0 with "decrease" stays silent forever, and the channel reads as not playing
+/// in SOUNDCNT_X. gbatek only says "0=No Sound"; the not-playing status is measured from the
+/// mgba-io-read reference (SOUNDCNT_X row), which expects these channels to read as off.
+fn envelope_can_sound(envelope_control: u16) -> bool {
+    envelope_control & 0xF800 != 0
+}
+
 /// Envelope step time, bits 8-10 (gbatek: SOUND1CNT_H "Envelope Step-Time", 0=No Envelope).
 fn envelope_step_time(control: u16) -> u8 {
     ((control >> 8) & 7) as u8
@@ -470,7 +478,7 @@ impl Psg {
                 if low_byte_written {
                     self.noise.length.load(64, value & 0x3F);
                 }
-                if !envelope_can_sound(value) {
+                if !envelope_can_sound(self.register(SOUND4CNT_L)) {
                     self.noise.playing = false;
                 }
             }
@@ -489,11 +497,14 @@ impl Psg {
 
     /// NRx1: a write of the length byte loads the length counter (gbatek: SOUND1CNT_H bits 0-5).
     fn write_tone_duty_envelope(&mut self, offset: u32, value: u16, low_byte_written: bool) {
+        // The register already holds the merged value, so a length-byte-only write keeps the
+        // envelope bits it had.
+        let silent = !envelope_can_sound(self.register(offset));
         let tone = &mut self.tone_channels[if offset == SOUND1CNT_H { 0 } else { 1 }];
         if low_byte_written {
             tone.length.load(64, value & 0x3F);
         }
-        if !envelope_can_sound(value) {
+        if silent {
             tone.playing = false;
         }
     }
@@ -632,6 +643,8 @@ mod tests {
         psg.io_write16(SOUND2CNT_L, 0x0800, 0xFFFF); // volume 0, increase: can sound
         psg.io_write16(SOUND2CNT_H, TRIGGER_BIT, 0xFF00);
         assert_eq!(psg.active_channels(), 0b0010);
+        psg.io_write16(SOUND2CNT_L, 0x0005, 0x00FF); // length byte only: keeps playing
+        assert_eq!(psg.active_channels(), 0b0010);
         psg.io_write16(SOUND2CNT_L, 0x0000, 0xFFFF); // writing a silent envelope stops it
         assert_eq!(psg.active_channels(), 0);
     }
@@ -658,12 +671,4 @@ mod tests {
         assert_eq!(psg.io_read16(WAVE_RAM_START), 0x1234);
         assert_eq!(psg.io_read16(SOUND2CNT_L), 0);
     }
-}
-
-/// Whether an envelope setting (bits 11-15: direction and initial volume) can ever make sound.
-/// Initial volume 0 with "decrease" stays silent forever, and the channel reads as not playing
-/// in SOUNDCNT_X. gbatek only says "0=No Sound"; the not-playing status is measured from the
-/// mgba-io-read reference (SOUNDCNT_X row), which expects these channels to read as off.
-fn envelope_can_sound(envelope_control: u16) -> bool {
-    envelope_control & 0xF800 != 0
 }
