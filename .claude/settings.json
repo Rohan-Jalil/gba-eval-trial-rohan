@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(//var/www/html/test-projects/gba-eval/candidates/**)",
+      "Read(//var/www/html/test-projects/gba-eval/third_party/**)",
+      "Read(//var/www/html/test-projects/gba-eval/reference/mesen_step.cpp)",
+      "Bash(*gba-eval/candidates*)",
+      "Bash(*gba-eval/third_party*)",
+      "WebFetch",
+      "WebSearch"
+    ]
+  }
+}
