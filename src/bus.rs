@@ -213,10 +213,10 @@ pub struct Bus {
     /// CPU cycles that PPU, timers and APU have not been advanced by yet. gba.rs defers them
     /// while no component event (IRQ, DMA trigger, sample) can fall inside them; see
     /// `Gba::run_frame`.
-    pub deferred_component_cycles: u32,
+    pub(crate) deferred_component_cycles: u32,
     /// Deferred cycles at which the earliest component event can happen; 0 forces a catch-up
     /// at the end of the current step.
-    pub cycles_until_component_event: u32,
+    pub(crate) cycles_until_component_event: u32,
 }
 
 impl Bus {

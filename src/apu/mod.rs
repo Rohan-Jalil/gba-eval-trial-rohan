@@ -43,7 +43,7 @@ pub struct Apu {
     psg_pending_cycles: u32,
     fifos: [fifo::SoundFifo; 2],
     /// Cycles accumulated towards the next output sample.
-    cycles_until_sample: u32,
+    cycles_since_sample: u32,
     /// Interleaved stereo i16 output, drained by the host through lib.rs.
     pub samples: Vec<i16>,
 }
@@ -57,7 +57,7 @@ impl Apu {
             psg: psg::Psg::new(),
             psg_pending_cycles: 0,
             fifos: [fifo::SoundFifo::new(), fifo::SoundFifo::new()],
-            cycles_until_sample: 0,
+            cycles_since_sample: 0,
             samples: Vec::with_capacity(MAX_BUFFERED_PAIRS * 2),
         }
     }
@@ -70,16 +70,16 @@ impl Apu {
 
     /// Cycles of `step` until the next output sample is mixed.
     pub fn cycles_until_sample(&self) -> u32 {
-        (CPU_CLOCK_HZ / self.sample_rate()).saturating_sub(self.cycles_until_sample)
+        (CPU_CLOCK_HZ / self.sample_rate()).saturating_sub(self.cycles_since_sample)
     }
 
     /// Advance by `cycles`, appending one stereo pair per output sample period.
     pub fn step(&mut self, cycles: u32) {
         let cycles_per_sample = CPU_CLOCK_HZ / self.sample_rate();
         self.psg_pending_cycles += cycles;
-        self.cycles_until_sample += cycles;
-        while self.cycles_until_sample >= cycles_per_sample {
-            self.cycles_until_sample -= cycles_per_sample;
+        self.cycles_since_sample += cycles;
+        while self.cycles_since_sample >= cycles_per_sample {
+            self.cycles_since_sample -= cycles_per_sample;
             self.catch_up_psg();
             let (left, right) = self.mix_sample();
             if self.samples.len() < MAX_BUFFERED_PAIRS * 2 {
