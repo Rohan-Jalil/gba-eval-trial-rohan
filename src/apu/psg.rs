@@ -66,11 +66,11 @@ impl LengthCounter {
         self.remaining == 0
     }
 
-    /// On restart an expired counter reloads to its full length.
-    fn reload_if_expired(&mut self, full_length: u16) {
-        if self.remaining == 0 {
-            self.remaining = full_length;
-        }
+    /// Load the length written in NRx1: (64-n)/256 s, or (256-n)/256 s for channel 3, in
+    /// 256 Hz ticks (gbatek: "Sound length; units of (64-n)/256s"). Used on every write of the
+    /// length byte and on restart, so a restarted sound plays for its programmed length.
+    fn load(&mut self, full_length: u16, length_field: u16) {
+        self.remaining = full_length - length_field;
     }
 }
 
@@ -79,26 +79,31 @@ impl LengthCounter {
 struct Envelope {
     volume: u8,
     countdown: u8,
+    /// Step time and direction latched on restart.
+    step_time: u8,
+    increase: bool,
 }
 
 impl Envelope {
+    /// Restart: latch initial volume, step time and direction (gbatek: SOUND1CNT_H bits 8-15).
     fn restart(&mut self, control: u16) {
         self.volume = envelope_initial_volume(control);
-        self.countdown = envelope_step_time(control);
+        self.step_time = envelope_step_time(control);
+        self.increase = control & 0x0800 != 0;
+        self.countdown = self.step_time;
     }
 
-    /// 64 Hz tick: step the volume once every `step_time` ticks, clamped to 0..=15.
-    fn tick(&mut self, control: u16) {
-        let step_time = envelope_step_time(control);
-        if step_time == 0 {
+    /// 64 Hz tick: step the volume once every `step_time` ticks (n/64 s), clamped to 0..=15.
+    fn tick(&mut self) {
+        if self.step_time == 0 {
             return;
         }
         self.countdown = self.countdown.saturating_sub(1);
         if self.countdown > 0 {
             return;
         }
-        self.countdown = step_time;
-        let increase = control & 0x0800 != 0;
+        self.countdown = self.step_time;
+        let increase = self.increase;
         if increase && self.volume < 15 {
             self.volume += 1;
         } else if !increase && self.volume > 0 {
@@ -107,25 +112,19 @@ impl Envelope {
     }
 }
 
+/// Envelope step time, bits 8-10 (gbatek: SOUND1CNT_H "Envelope Step-Time", 0=No Envelope).
 fn envelope_step_time(control: u16) -> u8 {
     ((control >> 8) & 7) as u8
 }
 
+/// Initial envelope volume, bits 12-15 (gbatek: SOUND1CNT_H "Initial Volume of envelope").
 fn envelope_initial_volume(control: u16) -> u8 {
     (control >> 12) as u8
 }
 
-/// A channel with volume 0 and direction "decrease" produces no sound and is switched off.
-fn envelope_silences_channel(control: u16) -> bool {
-    control & 0xF800 == 0
-}
-
-/// Frequency sweep state of channel 1 (gbatek: SOUND1CNT_L).
-#[derive(Default)]
-struct Sweep {
-    shadow_frequency: u16,
-    countdown: u8,
-    enabled: bool,
+/// Sweep time, bits 4-6, in 128 Hz ticks of 7.8 ms (gbatek: SOUND1CNT_L "Sweep Time").
+fn sweep_time(sweep_control: u16) -> u8 {
+    ((sweep_control >> 4) & 7) as u8
 }
 
 /// Channel 1 or 2 square wave (gbatek: GBA Sound Channel 1 - Tone & Sweep).
@@ -137,7 +136,8 @@ struct ToneChannel {
     countdown: u32,
     length: LengthCounter,
     envelope: Envelope,
-    sweep: Sweep,
+    /// 128 Hz ticks until the next sweep step (channel 1 only).
+    sweep_countdown: u8,
 }
 
 impl ToneChannel {
@@ -146,12 +146,14 @@ impl ToneChannel {
         (2048 - self.frequency as u32) * 16
     }
 
+    /// Advance the duty position by the steps elapsed in `cycles` (gbatek: SOUND1CNT_X frequency).
     fn advance(&mut self, cycles: u32) {
         let period = self.step_period();
         let steps = advance_timer(&mut self.countdown, period, cycles);
         self.duty_step = ((self.duty_step as u32 + steps) % 8) as u8;
     }
 
+    /// +volume on the high part of the duty cycle, -volume on the low part (gbatek: Wave Duty).
     fn output(&self, duty_envelope: u16) -> i16 {
         if !self.playing {
             return 0;
@@ -161,58 +163,44 @@ impl ToneChannel {
         if DUTY_PATTERNS[duty][self.duty_step as usize] { level } else { -level }
     }
 
+    /// Restart (NRx4 bit 15): reload length and envelope, restart the frequency timer.
     fn restart(&mut self, duty_envelope: u16) {
-        self.playing = !envelope_silences_channel(duty_envelope);
-        self.length.reload_if_expired(64);
+        self.playing = true;
+        self.length.load(64, duty_envelope & 0x3F);
         self.envelope.restart(duty_envelope);
         self.countdown = self.step_period();
     }
 
-    /// Next sweep frequency X(t) = X(t-1) +/- X(t-1)/2^n.
+    /// Next sweep frequency X(t) = X(t-1) +/- X(t-1)/2^n (gbatek: SOUND1CNT_L).
     fn sweep_target(&self, sweep_control: u16) -> u16 {
         let shift = sweep_control & 7;
-        let delta = self.sweep.shadow_frequency >> shift;
+        let delta = self.frequency >> shift;
         if sweep_control & 0x0008 != 0 {
-            self.sweep.shadow_frequency - delta
+            self.frequency - delta
         } else {
-            self.sweep.shadow_frequency + delta
+            self.frequency + delta
         }
     }
 
-    /// Restart part of the sweep: latch the frequency and check for an immediate overflow.
-    fn restart_sweep(&mut self, sweep_control: u16) {
-        let sweep_time = ((sweep_control >> 4) & 7) as u8;
-        let shift = sweep_control & 7;
-        self.sweep.shadow_frequency = self.frequency;
-        self.sweep.countdown = if sweep_time == 0 { 8 } else { sweep_time };
-        self.sweep.enabled = sweep_time != 0 || shift != 0;
-        if shift != 0 && self.sweep_target(sweep_control) > 2047 {
-            self.playing = false;
-        }
-    }
-
-    /// 128 Hz tick: apply one sweep step every `sweep_time` ticks; overflow past 2047 stops it.
+    /// 128 Hz tick: one sweep step every `sweep_time` ticks; sweep time 0 disables the sweep
+    /// (gbatek: "Sweep is disabled by setting Sweep Time to zero"). A result past the 11-bit
+    /// frequency range (2047) stops the channel; gbatek does not say what happens, so this
+    /// follows the task brief's "overflow disable" with one check per step.
     fn tick_sweep(&mut self, sweep_control: u16) {
-        let sweep_time = ((sweep_control >> 4) & 7) as u8;
-        self.sweep.countdown = self.sweep.countdown.saturating_sub(1);
-        if self.sweep.countdown > 0 {
+        let sweep_time = sweep_time(sweep_control);
+        if sweep_time == 0 {
             return;
         }
-        self.sweep.countdown = if sweep_time == 0 { 8 } else { sweep_time };
-        if !self.sweep.enabled || sweep_time == 0 {
+        self.sweep_countdown = self.sweep_countdown.saturating_sub(1);
+        if self.sweep_countdown > 0 {
             return;
         }
+        self.sweep_countdown = sweep_time;
         let target = self.sweep_target(sweep_control);
         if target > 2047 {
             self.playing = false;
-            return;
-        }
-        if sweep_control & 7 != 0 {
-            self.sweep.shadow_frequency = target;
+        } else {
             self.frequency = target;
-            if self.sweep_target(sweep_control) > 2047 {
-                self.playing = false;
-            }
         }
     }
 }
@@ -234,6 +222,9 @@ impl WaveChannel {
         (2048 - self.frequency as u32) * 8
     }
 
+    /// Advance the digit position by the digits elapsed in `cycles`, wrapping at `digit_count`.
+    /// gbatek describes wave RAM as a rotating 128-bit shift register; this uses a position
+    /// index into unrotated RAM instead.
     fn advance(&mut self, cycles: u32, digit_count: u32) {
         let period = self.digit_period();
         let steps = advance_timer(&mut self.countdown, period, cycles);
@@ -261,6 +252,7 @@ fn noise_period(control: u16) -> u32 {
 }
 
 impl NoiseChannel {
+    /// Clock the LFSR once per noise period in `cycles` (gbatek: Noise Random Generator).
     fn advance(&mut self, cycles: u32, control: u16) {
         let steps = advance_timer(&mut self.countdown, noise_period(control), cycles);
         let tap = if control & 0x0008 != 0 { 0x60 } else { 0x6000 };
@@ -275,9 +267,19 @@ impl NoiseChannel {
         }
     }
 
+    /// +volume after a carry (Out=HIGH), -volume otherwise (gbatek: Noise Random Generator).
+    fn output(&self) -> i16 {
+        if !self.playing {
+            return 0;
+        }
+        let level = self.envelope.volume as i16;
+        if self.output_high { level } else { -level }
+    }
+
+    /// Restart (NR44 bit 15): reload length and envelope, seed X=40h or X=4000h.
     fn restart(&mut self, envelope_control: u16, control: u16) {
-        self.playing = !envelope_silences_channel(envelope_control);
-        self.length.reload_if_expired(64);
+        self.playing = true;
+        self.length.load(64, envelope_control & 0x3F);
         self.envelope.restart(envelope_control);
         self.shift_register = if control & 0x0008 != 0 { 0x40 } else { 0x4000 };
         self.countdown = noise_period(control);
@@ -309,6 +311,7 @@ impl Psg {
         }
     }
 
+    /// Stored value of the PSG register at `offset` (gbatek: GBA Sound Channel 1-4 registers).
     fn register(&self, offset: u32) -> u16 {
         self.registers.read(offset)
     }
@@ -327,6 +330,7 @@ impl Psg {
         }
     }
 
+    /// Advance the channel frequency timers (gbatek: NRx3/NRx4 frequency, NR43 noise rate).
     fn advance_frequency_timers(&mut self, cycles: u32) {
         for tone in &mut self.tone_channels {
             tone.advance(cycles);
@@ -337,27 +341,26 @@ impl Psg {
         self.noise.advance(cycles, noise_control);
     }
 
-    /// 512 Hz frame sequencer: length at 256 Hz, sweep at 128 Hz, envelope at 64 Hz.
+    /// 512 Hz tick dividing down to the rates gbatek gives: length 1/256 s, sweep 7.8 ms
+    /// (128 Hz), envelope 1/64 s. Each runs evenly spaced; the phase between them is arbitrary.
     fn tick_frame_sequencer(&mut self) {
         let step = self.frame_step;
         self.frame_step = (step + 1) % 8;
         if step % 2 == 0 {
             self.tick_lengths();
         }
-        if step == 2 || step == 6 {
+        if step % 4 == 0 {
             let sweep_control = self.register(SOUND1CNT_L);
             self.tone_channels[0].tick_sweep(sweep_control);
         }
-        if step == 7 {
-            let tone1_envelope = self.register(SOUND1CNT_H);
-            let tone2_envelope = self.register(SOUND2CNT_L);
-            let noise_envelope = self.register(SOUND4CNT_L);
-            self.tone_channels[0].envelope.tick(tone1_envelope);
-            self.tone_channels[1].envelope.tick(tone2_envelope);
-            self.noise.envelope.tick(noise_envelope);
+        if step == 0 {
+            self.tone_channels[0].envelope.tick();
+            self.tone_channels[1].envelope.tick();
+            self.noise.envelope.tick();
         }
     }
 
+    /// 256 Hz tick: stop channels whose length expired (gbatek: NRx4 "Length Flag").
     fn tick_lengths(&mut self) {
         for tone in &mut self.tone_channels {
             if tone.length.tick() {
@@ -375,18 +378,11 @@ impl Psg {
     /// Current output of channels 1-4 as signed levels in -15..=15 (envelope or wave volume
     /// applied, 0 when the channel is off). The mixer scales and pans them.
     pub fn channel_outputs(&self) -> [i16; 4] {
-        let noise = if !self.noise.playing {
-            0
-        } else if self.noise.output_high {
-            self.noise.envelope.volume as i16
-        } else {
-            -(self.noise.envelope.volume as i16)
-        };
         [
             self.tone_channels[0].output(self.register(SOUND1CNT_H)),
             self.tone_channels[1].output(self.register(SOUND2CNT_L)),
             self.wave_output(),
-            noise,
+            self.noise.output(),
         ]
     }
 
@@ -422,7 +418,6 @@ impl Psg {
             | (self.noise.playing as u8) << 3
     }
 
-    #[allow(dead_code)] // called by the mixer (Phase 4 fifo-mixer worker)
     /// SOUNDCNT_X master enable cleared: reset the PSG registers (gbatek: SOUNDCNT_X bit 7).
     /// Wave RAM lies outside 0x060-0x081 and is kept.
     pub fn power_off(&mut self) {
@@ -469,14 +464,11 @@ impl Psg {
                     self.wave.playing = false;
                 }
             }
-            SOUND3CNT_H if low_byte_written => self.wave.length.remaining = 256 - (value & 0xFF),
+            SOUND3CNT_H if low_byte_written => self.wave.length.load(256, value & 0xFF),
             SOUND3CNT_X => self.write_wave_control(value, mask, triggered),
             SOUND4CNT_L => {
                 if low_byte_written {
-                    self.noise.length.remaining = 64 - (value & 0x3F);
-                }
-                if envelope_silences_channel(value) && mask & 0xFF00 != 0 {
-                    self.noise.playing = false;
+                    self.noise.length.load(64, value & 0x3F);
                 }
             }
             SOUND4CNT_H => {
@@ -492,14 +484,11 @@ impl Psg {
         }
     }
 
-    /// NRx1/NRx2: length load (low byte) and envelope; a silent envelope switches the channel off.
+    /// NRx1: a write of the length byte loads the length counter (gbatek: SOUND1CNT_H bits 0-5).
     fn write_tone_duty_envelope(&mut self, offset: u32, value: u16, low_byte_written: bool) {
         let tone = &mut self.tone_channels[if offset == SOUND1CNT_H { 0 } else { 1 }];
         if low_byte_written {
-            tone.length.remaining = 64 - (value & 0x3F);
-        }
-        if envelope_silences_channel(self.registers.read(offset)) {
-            tone.playing = false;
+            tone.length.load(64, value & 0x3F);
         }
     }
 
@@ -515,7 +504,7 @@ impl Psg {
         if triggered {
             tone.restart(duty_envelope);
             if index == 0 {
-                tone.restart_sweep(sweep_control);
+                tone.sweep_countdown = sweep_time(sweep_control);
             }
         }
     }
@@ -529,7 +518,7 @@ impl Psg {
         }
         if triggered {
             wave.playing = self.registers.read(SOUND3CNT_L) & 0x0080 != 0;
-            wave.length.reload_if_expired(256);
+            wave.length.load(256, self.registers.read(SOUND3CNT_H) & 0xFF);
             wave.position = 0;
             wave.countdown = wave.digit_period();
         }
@@ -599,5 +588,54 @@ mod tests {
         psg.step(noise_period(0x0008) * 127);
         assert_eq!(psg.noise.shift_register, start);
         assert_eq!(psg.active_channels(), 0b1000);
+    }
+
+    #[test]
+    fn restart_after_expiry_reloads_programmed_length() {
+        let mut psg = Psg::new();
+        psg.io_write16(SOUND2CNT_L, 0xF000 | 0x3E, 0xFFFF); // length 2/256 s
+        psg.io_write16(SOUND2CNT_H, TRIGGER_BIT | LENGTH_ENABLE_BIT, 0xFFFF);
+        psg.step(CYCLES_PER_SECOND / 64);
+        assert_eq!(psg.active_channels(), 0);
+        psg.io_write16(SOUND2CNT_H, TRIGGER_BIT | LENGTH_ENABLE_BIT, 0xFF00);
+        assert_eq!(psg.active_channels(), 0b0010);
+        assert_eq!(psg.tone_channels[1].length.remaining, 2);
+    }
+
+    #[test]
+    fn partial_byte_frequency_writes_merge() {
+        let mut psg = Psg::new();
+        psg.io_write16(SOUND1CNT_X, 0x0034, 0x00FF); // NR13: low 8 bits
+        psg.io_write16(SOUND1CNT_X, 0x0500, 0xFF00); // NR14: bits 8-10, no restart
+        assert_eq!(psg.tone_channels[0].frequency, 0x534);
+        assert_eq!(psg.active_channels(), 0);
+        psg.io_write16(SOUND1CNT_X, 0x0099, 0x00FF); // a low-byte write never restarts
+        assert_eq!(psg.tone_channels[0].frequency, 0x599);
+        psg.io_write16(SOUND1CNT_X, TRIGGER_BIT, 0xFF00);
+        assert_eq!(psg.tone_channels[0].frequency, 0x099);
+        assert_eq!(psg.active_channels(), 1);
+    }
+
+    #[test]
+    fn wave_volume_settings() {
+        let mut psg = Psg::new();
+        psg.io_write16(SOUND3CNT_L, 0x0040, 0xFFFF);
+        psg.io_write16(WAVE_RAM_START, 0x00F0, 0xFFFF); // first digit 15 -> level +15
+        psg.io_write16(SOUND3CNT_L, 0x0080, 0xFFFF);
+        psg.io_write16(SOUND3CNT_X, TRIGGER_BIT, 0xFFFF);
+        for (volume_bits, expected) in [(0x8000, 11), (0x4000, 7), (0x6000, 3), (0x0000, 0)] {
+            psg.io_write16(SOUND3CNT_H, volume_bits, 0xFF00);
+            assert_eq!(psg.channel_outputs()[2], expected);
+        }
+    }
+
+    #[test]
+    fn power_off_keeps_wave_ram() {
+        let mut psg = Psg::new();
+        psg.io_write16(WAVE_RAM_START, 0x1234, 0xFFFF);
+        psg.io_write16(SOUND2CNT_L, 0xF000, 0xFFFF);
+        psg.power_off();
+        assert_eq!(psg.io_read16(WAVE_RAM_START), 0x1234);
+        assert_eq!(psg.io_read16(SOUND2CNT_L), 0);
     }
 }
