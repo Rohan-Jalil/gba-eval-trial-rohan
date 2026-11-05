@@ -145,6 +145,10 @@ impl Cpu {
         }
 
         let instruction_address = self.registers[PROGRAM_COUNTER];
+        // Tell the bus and IRQ controller what is executing: open-bus values, BIOS read
+        // protection and the BIOS-only HALTCNT rule depend on it.
+        bus.irq.executing_bios = instruction_address < BIOS_SIZE as u32;
+        bus.note_instruction_fetch(instruction_address, self.in_thumb_state());
         self.pipeline_flushed = false;
         let internal_cycles = if self.in_thumb_state() {
             let opcode = bus.read16(instruction_address & !1);
@@ -179,7 +183,6 @@ impl Cpu {
         if bus.irq.pending() && self.cpsr & CPSR_IRQ_DISABLE == 0 {
             self.enter_exception(Exception::Interrupt);
         }
-        bus.irq.executing_bios = self.registers[PROGRAM_COUNTER] < BIOS_SIZE as u32;
         None
     }
 
@@ -642,7 +645,7 @@ mod tests {
         cpu.service_interrupts_and_halt(&mut bus);
         assert_eq!(cpu.mode(), MODE_IRQ);
         assert_eq!(cpu.registers[LINK_REGISTER], 0x0300_0004);
-        assert!(bus.irq.executing_bios, "the IRQ vector is BIOS code");
+        assert_eq!(cpu.registers[PROGRAM_COUNTER], 0x18, "next fetch is the BIOS IRQ vector");
     }
 
     #[test]
