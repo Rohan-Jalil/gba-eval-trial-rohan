@@ -15,6 +15,8 @@ date, what, why.
 | 2026-11-05 | Audio must be produced at Mesen2's rate (`32768 << SOUNDBIAS resolution`) | The grader analyses candidate audio at the reference's rate (`lockstep/src/lib.rs`), so a different rate distorts the spectrum. |
 | 2026-11-05 | Score ceiling noted as 0.96 | `comprehensive` has weight 0.20 in procedural but no testcases, so it always scores 0. |
 | 2026-11-05 | Baseline to beat: 0.5345 overall (replay 0.596, procedural 0.486, audio 0.399) | Full grade of `candidates/gba-core/gba_core_shim.wasm`, run as a binary only; its source was not read. |
+| 2026-11-05 | Worker branches merged with `--no-ff` after a fresh-context reviewer; max 2 review/fix rounds, then escalate to the human | Keeps each worker's changes traceable and stops agents looping on the same failure. |
+| 2026-11-05 | Each milestone is tagged `phase-<N>` and pushed to origin with `results/milestones/phase-<N>/` | Gives a known-good point to roll back to, especially before stretch phases. |
 
 ## Agent and model usage per phase
 
