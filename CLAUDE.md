@@ -49,6 +49,15 @@ Use that absolute path; relative paths break inside worktrees.
 - Milestones: `scripts/grade-full.sh <phase> "<note>"` saves `results/milestones/<phase>/`. Commit that
   folder and `scores.tsv`. All other `results/` output stays ignored.
 
+## Grading budget
+- Run graders one at a time across all agents: wrap every `scripts/grade-subset.sh` or `grade-full.sh` call in
+  `flock /tmp/gba-emu-grader.lock ...`. Parallel graders ran the machine out of memory in Phase 3.
+- A worker gets at most **5 grader runs** per task, including the before/after runs, plus 2 more per review/fix round.
+  Unit tests, `cargo test` and `run_rom` are not limited.
+- When the budget is spent, stop experimenting: commit the best version you measured, revert variants that scored
+  worse, and report. "No improvement found" is an acceptable result; say so plainly.
+- Reviewers do not run graders; the integrator grades merged branches.
+
 ## Before you report done
 1. `cargo test` passes.
 2. `cargo build --release --lib --target wasm32-unknown-unknown` succeeds.

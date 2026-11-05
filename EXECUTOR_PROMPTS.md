@@ -14,7 +14,10 @@ Each prompt refers to the two procedures below. The executor reads them from thi
    The task text must include:
    - its branch name `phase<N>/<role>`, which it creates with `git switch -c` in its worktree;
    - the `main` commit it starts from;
-   - any extra instructions from the phase prompt.
+   - any extra instructions from the phase prompt;
+   - the grading budget from CLAUDE.md ("Grading budget": at most 5 grader runs, serialised with `flock`).
+   If a worker is still experimenting after its budget, send it a hard stop with SendMessage: commit the
+   best measured version and report.
 2. When the worker reports, launch a **new** `reviewer` agent, never a continued one, so its context is
    fresh. Give it only the branch name. Do not pass on the worker's report or reasoning.
 3. If the verdict is `changes needed`, or `ORIGINALITY: concerns`, or there are `major` readability findings, send the findings back to the worker
