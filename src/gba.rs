@@ -12,13 +12,11 @@ use crate::scheduler::Scheduler;
 /// 228 lines x 1232 cycles (gbatek: LCD Dimensions and Timings).
 pub const CYCLES_PER_FRAME: u32 = 280_896;
 
-/// Scanline at whose start `run_frame` returns. 160 = frame ends at the start of VBlank (the
-/// picture is complete and the game's VBlank handler runs after the host sets the next keys);
-/// 0 = frame ends at the start of the next frame's drawing. Must match Mesen2's frame boundary:
-/// the integrator compares early frames with the reference and changes this one value if needed.
-/// Every frame is exactly `CYCLES_PER_FRAME` long; only the first frame after reset is shorter
-/// (it runs from line 0 to this line).
-pub const FRAME_END_LINE: u32 = 160;
+/// Scanline at whose start `run_frame` returns. 0 = each frame runs lines 0..227 (drawing, then
+/// all of VBlank); 160 would end at VBlank start. Measured against Mesen2 via the grader (see
+/// NOTES.md, 2026-11-05): a key set before frame N first shows in frame N+1 on tonc key-demo,
+/// which polls keys at VBlank, so the reference's frame includes the VBlank after the picture.
+pub const FRAME_END_LINE: u32 = 0;
 
 pub struct Gba {
     pub cpu: Cpu,
