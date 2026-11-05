@@ -1,0 +1,63 @@
+config: reference=reference/mesen.wasm
+candidate: gba_emu (27885 bytes)
+
+indexed 77 ROMs under "/subset/roms"
+corpus: 6 testcases
+
+── aw-arm-alu (procedural/cpu) ──────────────────────────
+┌─ Mesen (cached) vs gba_emu ─────────────────────────
+│ video: 0.0164  audio: —
+│ ✗ 599/600 frames diverge (first: 1)
+│   avg 1719 px/frame (4.48% of screen)
+│   worst: frame 4 (4042 px = 10.5%)
+└──────────────────────────────────────────────────
+── aw-thumb-alu (procedural/cpu) ──────────────────────────
+┌─ Mesen (cached) vs gba_emu ─────────────────────────
+│ video: 0.0066  audio: —
+│ ✗ 398/400 frames diverge (first: 1)
+│   avg 2966 px/frame (7.72% of screen)
+│   worst: frame 4 (4042 px = 10.5%)
+└──────────────────────────────────────────────────
+── memory (procedural/memory) ──────────────────────────
+┌─ Mesen (cached) vs gba_emu ─────────────────────────
+│ video: 0.0000  audio: —
+│ ✗ 60/60 frames diverge (first: 0)
+│   avg 38130 px/frame (99.30% of screen)
+│   worst: frame 0 (38130 px = 99.3%)
+└──────────────────────────────────────────────────
+── timer-reload (procedural/timer) ──────────────────────────
+┌─ Mesen (cached) vs gba_emu ─────────────────────────
+│ video: 0.0126  audio: —
+│ ✗ 60/60 frames diverge (first: 0)
+│   avg 38400 px/frame (100.00% of screen)
+│   worst: frame 0 (38400 px = 100.0%)
+└──────────────────────────────────────────────────
+── dma-priority (procedural/dma) ──────────────────────────
+┌─ Mesen (cached) vs gba_emu ─────────────────────────
+│ video: 0.0312  audio: —
+│ ✗ 59/60 frames diverge (first: 1)
+│   avg 5404 px/frame (14.07% of screen)
+│   worst: frame 1 (5404 px = 14.1%)
+└──────────────────────────────────────────────────
+── tonc-snd1 (replay/gameplay) ──────────────────────────
+┌─ Mesen (cached) vs gba_emu ─────────────────────────
+│ video: 0.0000  audio: 0.0000
+│ ✗ 60/60 frames diverge (first: 0)
+│   avg 200 px/frame (0.52% of screen)
+│   worst: frame 0 (480 px = 1.2%)
+└──────────────────────────────────────────────────
+
+╔══════════════════════════════════════════════════════════╗
+║  OVERALL: 0.0000                                        ║
+╠══════════════════════════════════════════════════════════╣
+║  procedural   0.0000 ░░░░░░░░░░░░░░░░░░░░
+║  replay       0.0000 ░░░░░░░░░░░░░░░░░░░░
+║  audio        0.0000 ░░░░░░░░░░░░░░░░░░░░
+╚══════════════════════════════════════════════════════════╝
+written to "/out"
+aw-arm-alu                   video=9.999998989515043e-17  audio=None
+aw-thumb-alu                 video=9.999998989515043e-17  audio=None
+dma-priority                 video=9.999998989515043e-17  audio=None
+memory                       video=9.999998989515043e-17  audio=None
+timer-reload                 video=9.999998989515043e-17  audio=None
+tonc-snd1                    video=4.8101474450216e-05    audio=0.0
