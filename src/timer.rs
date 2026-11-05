@@ -18,7 +18,7 @@ const PRESCALER_SHIFTS: [u32; 4] = [0, 6, 8, 10];
 
 /// Cycles between the start bit going 0 -> 1 and the first counted cycle.
 /// gbatek does not document a start delay; this is the calibration knob for it.
-const START_DELAY_CYCLES: u32 = 0;
+const START_DELAY_CYCLES: u32 = 2;
 
 const IRQ_SOURCES: [IrqSource; 4] = [IrqSource::Timer0, IrqSource::Timer1, IrqSource::Timer2, IrqSource::Timer3];
 
@@ -83,18 +83,40 @@ impl Timer {
 
 pub struct Timers {
     timers: [Timer; 4],
+    /// Cycles of the current step already applied by `catch_up` (mid-instruction register access).
+    cycles_already_run: u32,
+    /// Overflows seen by `catch_up` that `step` has not reported yet.
+    pending_overflow_mask: u8,
 }
 
 impl Timers {
     pub fn new() -> Self {
-        Timers { timers: [Timer::default(); 4] }
+        Timers { timers: [Timer::default(); 4], cycles_already_run: 0, pending_overflow_mask: 0 }
     }
 
     /// Advance all timers by `cycles`. Returns a bit mask of timers that overflowed (bit 0 = timer 0),
     /// which gba.rs forwards to the APU for FIFO ticks. Overflow IRQs are requested on `irq`.
+    /// Cycles already applied by `catch_up` since the last step are not counted twice.
     /// ponytail: one bit per timer per call, so the APU sees at most one FIFO tick per step even if
     /// a timer overflowed several times; return counts if FIFO timing needs it.
     pub fn step(&mut self, cycles: u32, irq: &mut Irq) -> u8 {
+        let remaining_cycles = cycles.saturating_sub(self.cycles_already_run);
+        self.cycles_already_run = 0;
+        let overflow_mask = self.advance(remaining_cycles, irq) | self.pending_overflow_mask;
+        self.pending_overflow_mask = 0;
+        overflow_mask
+    }
+
+    /// Bring the timers up to `cycles_since_step` cycles past the last `step`, so a register
+    /// access in the middle of an instruction sees (and changes) the exact current count.
+    pub fn catch_up(&mut self, cycles_since_step: u32, irq: &mut Irq) {
+        let new_cycles = cycles_since_step.saturating_sub(self.cycles_already_run);
+        self.cycles_already_run += new_cycles;
+        self.pending_overflow_mask |= self.advance(new_cycles, irq);
+    }
+
+    /// Run every timer for `cycles`, cascading overflows into count-up timers.
+    fn advance(&mut self, cycles: u32, irq: &mut Irq) -> u8 {
         let mut overflow_mask = 0;
         let mut previous_overflows = 0;
         for (index, timer) in self.timers.iter_mut().enumerate() {
@@ -150,16 +172,18 @@ mod tests {
     const TM1CNT_L: u32 = 0x104;
     const TM1CNT_H: u32 = 0x106;
 
-    fn start(timers: &mut Timers, low_offset: u32, reload: u16, control: u16) {
+    /// Start a timer and run past its start delay.
+    fn start(timers: &mut Timers, irq: &mut Irq, low_offset: u32, reload: u16, control: u16) {
         timers.io_write16(low_offset, reload, 0xFFFF);
         timers.io_write16(low_offset + 2, control | CONTROL_START, 0xFFFF);
+        timers.step(START_DELAY_CYCLES, irq);
     }
 
     #[test]
     fn prescaler_divides_cycles() {
         let mut timers = Timers::new();
         let mut irq = Irq::new();
-        start(&mut timers, TM0CNT_L, 0, 1); // F/64
+        start(&mut timers, &mut irq, TM0CNT_L, 0, 1); // F/64
         timers.step(63, &mut irq);
         assert_eq!(timers.io_read16(TM0CNT_L), 0);
         timers.step(1 + 64 * 9, &mut irq);
@@ -170,7 +194,7 @@ mod tests {
     fn reload_on_start_and_overflow_with_irq() {
         let mut timers = Timers::new();
         let mut irq = Irq::new();
-        start(&mut timers, TM0CNT_L, 0xFFF0, CONTROL_IRQ_ENABLE);
+        start(&mut timers, &mut irq, TM0CNT_L, 0xFFF0, CONTROL_IRQ_ENABLE);
         assert_eq!(timers.io_read16(TM0CNT_L), 0xFFF0);
         // Writing the reload while running does not touch the counter.
         timers.io_write16(TM0CNT_L, 0xFF00, 0xFFFF);
@@ -184,8 +208,8 @@ mod tests {
     fn multiple_overflows_in_one_step_and_cascade() {
         let mut timers = Timers::new();
         let mut irq = Irq::new();
-        start(&mut timers, TM1CNT_L, 0, CONTROL_COUNT_UP);
-        start(&mut timers, TM0CNT_L, 0xFF00, 0);
+        start(&mut timers, &mut irq, TM1CNT_L, 0, CONTROL_COUNT_UP);
+        start(&mut timers, &mut irq, TM0CNT_L, 0xFF00, 0);
         // 0x100 ticks per period: 3 full overflows plus 7 ticks.
         assert_eq!(timers.step(0x300 + 7, &mut irq), 1);
         assert_eq!(timers.io_read16(TM0CNT_L), 0xFF07);
@@ -194,10 +218,21 @@ mod tests {
     }
 
     #[test]
+    fn catch_up_is_not_counted_twice_by_step() {
+        let mut timers = Timers::new();
+        let mut irq = Irq::new();
+        start(&mut timers, &mut irq, TM0CNT_L, 0xFFF0, 0);
+        timers.catch_up(3, &mut irq);
+        assert_eq!(timers.io_read16(TM0CNT_L), 0xFFF3);
+        assert_eq!(timers.step(10, &mut irq), 0);
+        assert_eq!(timers.io_read16(TM0CNT_L), 0xFFFA);
+    }
+
+    #[test]
     fn stop_freezes_counter_and_restart_reloads() {
         let mut timers = Timers::new();
         let mut irq = Irq::new();
-        start(&mut timers, TM0CNT_L, 100, 0);
+        start(&mut timers, &mut irq, TM0CNT_L, 100, 0);
         timers.step(5, &mut irq);
         timers.io_write16(TM0CNT_H, 0, 0xFFFF);
         timers.step(50, &mut irq);
