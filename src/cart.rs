@@ -6,7 +6,8 @@
 pub const MAX_ROM_SIZE: usize = 32 * 1024 * 1024;
 /// Save area size when the ROM declares no backup type.
 const DEFAULT_SAVE_SIZE: usize = 0x10000;
-/// SRAM/FRAM carts hold 32 KiB, mirrored across the save window (gbatek: GBA Cart Backup SRAM/FRAM).
+/// SRAM/FRAM carts hold 32 KiB (gbatek: GBA Cart Backup SRAM/FRAM), repeated twice in the 64K
+/// save field (gbatek: GBA Memory Map, Memory Mirrors).
 const SRAM_SIZE: usize = 0x8000;
 /// Library ID string of SRAM carts (gbatek: GBA Cart Backup IDs).
 const SRAM_ID: &[u8] = b"SRAM_V";
