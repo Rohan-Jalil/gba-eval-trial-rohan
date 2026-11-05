@@ -66,6 +66,9 @@ date, what, why.
 | 2026-11-05 | Audio rate check: `emu_audio_rate()` returns `apu.sample_rate()` = 32768 << SOUNDBIAS bits 14-15; cycles per sample = 16777216 / rate is exact for all 4 rates, so samples per frame do not drift | PLAN.md Phase 4 critical rule. The grader reads the reference's rate once after boot (lockstep). |
 | 2026-11-05 | Mixer in gbatek DAC units (FIFO +/-0x200, PSG ~+/-0x80, + bias, clip to 10 bits, drop low bits per resolution); i16 = (DAC - bias) << 5. FIFO refill requested at <= 16 bytes after a pop | gbatek "Max Output Levels". Shift 5 chosen because the reference WAVs were ~2x quieter than shift 6 on both celeste and piugba (level only; the grader compares log-mel shapes). |
 | 2026-11-05 | fifo-mixer review minors deferred: block PSG/SOUNDCNT_L writes while master enable is off; name FIFO high-half offsets and SOUNDCNT_H bit fields; mask SOUNDCNT_H bits 4-7; piugba output ~957 samples longer than the reference (cause outside apu, not yet found) | Minor; audio gate first. |
+| 2026-11-05 | PSG limited to what gbatek states: 512 Hz divided evenly to length 256 Hz / sweep 128 Hz / envelope 64 Hz, sweep time 0 = no sweep, one overflow check per sweep step (> 2047 stops the channel, our choice), volume 0 outputs 0 without clearing the on flag. Review round 1 removed Game Boy-documentation details (step layout, sweep reload 8, extra overflow checks, NRx2 0xF800 switch-off) | Originality concern: only gbatek is an allowed source. Measured cost: tonc-snd1 audio 0.98150 to 0.98146, chip-advance unchanged. |
+| 2026-11-05 | chip-advance-gameplay plays its music through the FIFOs, not the PSG, despite its `psg` audio tag | The PSG worker graded it with the stub PSG (same 0.8423) and logged its sound register writes. |
+| 2026-11-05 | PSG review minors deferred: sweep shift 0 edge case comment, named register bit constants, `apply_wave_volume` helper | Minor. |
 
 ## Agent and model usage per phase
 
@@ -93,3 +96,4 @@ date, what, why.
 | 2026-11-05 | 3 | reviewer (x3, fresh each time) | claude-opus-5-5 | phase3/* | sprites 1, affine-bitmap 1, effects 1 round; no grading (serialised to the integrator) |
 | 2026-11-05 | 3 | executor (integrator) | claude-opus-5-5 | main | Layer contract, PA/PD power-on, merges, serial grading, phase-3 milestone 0.6213 |
 | 2026-11-05 | 4 | apu-fifo-mixer | claude-opus-5-5 | phase4/apu-fifo-mixer | Merged after 1 review round (merge, clean, 7 minor). Audio: celeste 0.886, chip-advance 0.842, piugba 0.684 |
+| 2026-11-05 | 4 | apu-psg | claude-opus-5-5 | phase4/apu-psg | Merged after 2 review rounds (round 1: originality concern, Game Boy-doc details removed; round 2: merge, clean). tonc-snd1 audio 0.981 |
