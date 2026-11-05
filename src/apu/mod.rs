@@ -33,7 +33,7 @@ const BIAS_LEVEL_MASK: u16 = 0x03FE;
 /// Highest value of the unsigned 10-bit DAC.
 const DAC_MAX: i32 = 0x3FF;
 /// Scale from the 10-bit DAC range (centred on the bias) to i16.
-const DAC_TO_I16_SHIFT: u32 = 6;
+const DAC_TO_I16_SHIFT: u32 = 5;
 
 pub struct Apu {
     registers: PlainRegisters<0x28>,
