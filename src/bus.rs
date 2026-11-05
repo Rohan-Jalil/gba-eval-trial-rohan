@@ -57,18 +57,82 @@ fn region_of(address: u32) -> Region {
     }
 }
 
-/// Cycle cost with default wait states (gbatek: GBA Memory Map, "Address Bus Width and CPU
-/// Read/Write Access Widths").
-// ponytail: fixed default wait states, no WAITCNT, no sequential/non-sequential split, no
-// video-memory contention; Phase 2/5 wire WAITCNT and prefetch in here.
-fn access_cost(region: Region, width: Width) -> u32 {
-    let is_word = width == Width::Word;
-    match region {
-        Region::Bios | Region::Iwram | Region::Io | Region::Oam | Region::Unmapped => 1,
-        Region::Ewram => if is_word { 6 } else { 3 },
-        Region::Palette | Region::Vram => if is_word { 2 } else { 1 },
-        Region::Rom => if is_word { 8 } else { 5 },
-        Region::Sram => 5,
+/// Wait-state settings derived from WAITCNT (0x4000204) and the internal memory control register
+/// (0x4000800) (gbatek: GBA System Control). All values are total cycles for one 16-bit access.
+#[derive(Clone, Copy, Debug)]
+pub struct WaitStates {
+    /// Game Pak ROM wait states 0-2: first (non-sequential) access.
+    rom_nonsequential: [u32; 3],
+    /// Game Pak ROM wait states 0-2: second (sequential) access.
+    rom_sequential: [u32; 3],
+    /// Game Pak SRAM, any width.
+    sram: u32,
+    /// On-board 256K work RAM, 8/16-bit (a 32-bit access costs twice this).
+    ewram: u32,
+}
+
+/// WAITCNT first-access wait counts for field values 0..3 (gbatek: WAITCNT bits 0-1, 2-3, 5-6, 8-9).
+const FIRST_ACCESS_WAITS: [u32; 4] = [4, 3, 2, 8];
+/// WAITCNT second-access wait counts for field value 0 per wait state (1 when the bit is set).
+const SECOND_ACCESS_WAITS: [u32; 3] = [2, 4, 8];
+
+impl WaitStates {
+    /// Decode WAITCNT and the internal memory control word (gbatek: 4000204h WAITCNT,
+    /// 4000800h Internal Memory Control). Each access takes 1 cycle plus its wait states.
+    pub fn from_registers(waitcnt: u16, memory_control: u32) -> Self {
+        let first_access = |shift: u32| 1 + FIRST_ACCESS_WAITS[((waitcnt >> shift) & 3) as usize];
+        let second_access = |state: usize, bit: u32| {
+            if waitcnt & (1 << bit) != 0 { 2 } else { 1 + SECOND_ACCESS_WAITS[state] }
+        };
+        let ewram_wait_field = (memory_control >> 24) & 0xF;
+        WaitStates {
+            rom_nonsequential: [first_access(2), first_access(5), first_access(8)],
+            rom_sequential: [second_access(0, 4), second_access(1, 7), second_access(2, 10)],
+            sram: first_access(0),
+            // 0-14 = 15..1 wait states; 15 locks up on hardware, treated as 1 wait state here.
+            ewram: 1 + 15u32.saturating_sub(ewram_wait_field).max(1),
+        }
+    }
+
+    /// Cycle cost of one access (gbatek: GBA Memory Map, "Address Bus Width and CPU Read/Write
+    /// Access Widths"; GBA System Control, WAITCNT). `sequential` only matters for Game Pak ROM.
+    // ponytail: no Game Pak prefetch buffer and no video-memory contention; Phase 5 adds them.
+    fn access_cost(&self, region: Region, address: u32, width: Width, sequential: bool) -> u32 {
+        let is_word = width == Width::Word;
+        match region {
+            Region::Bios | Region::Iwram | Region::Io | Region::Oam | Region::Unmapped => 1,
+            Region::Ewram => if is_word { 2 * self.ewram } else { self.ewram },
+            Region::Palette | Region::Vram => if is_word { 2 } else { 1 },
+            Region::Rom => {
+                let wait_state = (((address >> 24) - 0x08) / 2) as usize;
+                let first = if sequential {
+                    self.rom_sequential[wait_state]
+                } else {
+                    self.rom_nonsequential[wait_state]
+                };
+                // The 16-bit Game Pak bus splits a word into two halves; the second is sequential.
+                if is_word { first + self.rom_sequential[wait_state] } else { first }
+            }
+            Region::Sram => self.sram,
+        }
+    }
+}
+
+pub const WAITCNT_OFFSET: u32 = 0x204; // WAITCNT, Game Pak wait-state control
+pub const MEMORY_CONTROL_OFFSET: u32 = 0x800; // undocumented internal memory control, low half
+pub const MEMORY_CONTROL_HIGH_OFFSET: u32 = 0x802; // internal memory control, high half
+
+/// Power-on value of the internal memory control register at 0x4000800 (gbatek).
+pub const MEMORY_CONTROL_RESET: u32 = 0x0D00_0020;
+
+/// Game Pak accesses are forced non-sequential at the start of every 128K block (gbatek: WAITCNT notes).
+const ROM_SEQUENTIAL_BLOCK_MASK: u32 = 0x1FFFF;
+
+fn width_in_bytes(width: Width) -> u32 {
+    match width {
+        Width::Byte => 1,
+        Width::Halfword => 2,
+        Width::Word => 4,
     }
 }
 
@@ -107,6 +171,14 @@ pub struct Bus {
     pub cart: Cart,
     /// Cycles spent on accesses since the last `take_access_cycles()`.
     pub access_cycles: u32,
+    /// Current wait-state table, refreshed when WAITCNT or 0x4000800 is written.
+    pub wait_states: WaitStates,
+    /// Shadow copies of WAITCNT and the internal memory control register, kept here because the
+    /// wait-state table is derived from them. The registers themselves are stored by irq.rs.
+    waitcnt: u16,
+    memory_control: u32,
+    /// Address that would continue the previous access sequentially (for S vs N cycles).
+    next_sequential_address: u32,
 }
 
 impl Bus {
@@ -123,6 +195,10 @@ impl Bus {
             irq: Irq::new(),
             cart: Cart::new(rom),
             access_cycles: 0,
+            wait_states: WaitStates::from_registers(0, MEMORY_CONTROL_RESET),
+            waitcnt: 0,
+            memory_control: MEMORY_CONTROL_RESET,
+            next_sequential_address: u32::MAX,
         }
     }
 
@@ -131,10 +207,31 @@ impl Bus {
         std::mem::take(&mut self.access_cycles)
     }
 
+    /// Add the cost of one access to `access_cycles`. An access is sequential when it continues
+    /// directly after the previous one, except at a Game Pak 128K block boundary.
     fn charge(&mut self, address: u32, width: Width) -> Region {
         let region = region_of(address);
-        self.access_cycles += access_cost(region, width);
+        let sequential = address == self.next_sequential_address
+            && (address & ROM_SEQUENTIAL_BLOCK_MASK) != 0;
+        self.access_cycles += self.wait_states.access_cost(region, address, width, sequential);
+        self.next_sequential_address = address.wrapping_add(width_in_bytes(width));
         region
+    }
+
+    /// Track writes to WAITCNT (0x204) and the internal memory control register (0x800/0x802)
+    /// and recompute the wait-state table (gbatek: GBA System Control).
+    pub fn note_wait_control_write(&mut self, offset: u32, value: u16, mask: u16) {
+        match offset {
+            WAITCNT_OFFSET => self.waitcnt = crate::io::merge(self.waitcnt, value, mask),
+            MEMORY_CONTROL_OFFSET | MEMORY_CONTROL_HIGH_OFFSET => {
+                let shift = (offset - MEMORY_CONTROL_OFFSET) * 8;
+                let old_half = (self.memory_control >> shift) as u16;
+                let new_half = crate::io::merge(old_half, value, mask) as u32;
+                self.memory_control = (self.memory_control & !(0xFFFF << shift)) | (new_half << shift);
+            }
+            _ => return,
+        }
+        self.wait_states = WaitStates::from_registers(self.waitcnt, self.memory_control);
     }
 
     pub fn read8(&mut self, address: u32) -> u8 {
@@ -304,6 +401,38 @@ mod tests {
         assert_eq!(bus.read16(0x0400_0202), 0x0100);
         bus.write32(0x0400_0200, 0x0000_3FFF); // IE = all, IF write of 0 clears nothing
         assert_eq!(bus.read32(0x0400_0200), 0x0100_3FFF);
+    }
+
+    #[test]
+    fn rom_wait_states_follow_waitcnt_and_sequential_access() {
+        let mut bus = Bus::new(&[0; 0x40000]);
+        bus.read16(0x0800_0100); // non-sequential, default WS0 first access 4 waits
+        assert_eq!(bus.take_access_cycles(), 5);
+        bus.read16(0x0800_0102); // sequential, WS0 second access 2 waits
+        assert_eq!(bus.take_access_cycles(), 3);
+        bus.read32(0x0800_0200); // N + S
+        assert_eq!(bus.take_access_cycles(), 8);
+        bus.write16(0x0400_0204, 0x4317); // WS0 3,1; SRAM 8; WS2 8,8; prefetch on
+        bus.take_access_cycles();
+        bus.read16(0x0800_0300);
+        assert_eq!(bus.take_access_cycles(), 4);
+        bus.read16(0x0800_0302);
+        assert_eq!(bus.take_access_cycles(), 2);
+        bus.read16(0x0801_FFFE);
+        bus.take_access_cycles();
+        bus.read16(0x0802_0000); // 128K block start is always non-sequential
+        assert_eq!(bus.take_access_cycles(), 4);
+        bus.read8(0x0E00_0000); // SRAM field 3 = 8 waits
+        assert_eq!(bus.take_access_cycles(), 9);
+    }
+
+    #[test]
+    fn ewram_wait_follows_memory_control() {
+        let mut bus = Bus::new(&[]);
+        bus.write32(0x0400_0800, 0x0E00_0020); // 1 wait state
+        bus.take_access_cycles();
+        bus.read32(0x0200_0000);
+        assert_eq!(bus.take_access_cycles(), 4);
     }
 
     #[test]

@@ -107,7 +107,8 @@ impl Bus {
         } else if in_range(offset, SERIAL_LOW_RANGE) || in_range(offset, SERIAL_HIGH_RANGE) {
             self.serial.io_write16(offset, value, mask)
         } else if in_range(offset, SYSTEM_RANGE) {
-            self.irq.io_write16(offset, value, mask)
+            self.irq.io_write16(offset, value, mask);
+            self.note_wait_control_write(offset, value, mask);
         }
     }
 

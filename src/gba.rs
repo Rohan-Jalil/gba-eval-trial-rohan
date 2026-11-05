@@ -102,9 +102,11 @@ mod tests {
         let mut gba = Gba::new(&[]);
         gba.run_frame();
         assert_eq!(gba.bus.ppu.vcount as u32, FRAME_END_LINE % 228);
-        let after_first = gba.scheduler.total_cycles;
         gba.run_frame();
-        assert_eq!(gba.scheduler.total_cycles - after_first, CYCLES_PER_FRAME as u64);
+        // Overshoot of the last instruction carries into the next frame, so frames stay on the
+        // 280,896-cycle grid to within one instruction.
+        let overshoot = gba.scheduler.total_cycles - 2 * CYCLES_PER_FRAME as u64;
+        assert!(overshoot < 32, "overshoot {overshoot}");
         assert_eq!(gba.bus.ppu.vcount as u32, FRAME_END_LINE % 228);
     }
 
