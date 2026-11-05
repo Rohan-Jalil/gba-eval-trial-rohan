@@ -64,6 +64,8 @@ date, what, why.
 | 2026-11-05 | Phase 4 contract (`refactor(apu): PSG and mixer contract`, 622c051): mod.rs routes 0x060-0x07F and wave RAM to psg.rs; PSG exposes `step(cycles)`, `channel_outputs() -> [i16; 4]` (-15..=15), `active_channels()`, `power_off()`. The timer-overflow to FIFO to DMA path in gba.rs was already wired in Phase 2 (`on_timer_overflow` returns the FIFOs needing a refill, forwarded to `dma.notify_fifo_request`) | Lets the PSG and fifo-mixer workers run in parallel without touching each other's files; gba.rs needs no change. |
 | 2026-11-05 | Graders are serialised with `flock` on a shared lock file in the session scratchpad | Prevents a repeat of Phase 3's out-of-memory kills when workers grade at the same time. |
 | 2026-11-05 | Audio rate check: `emu_audio_rate()` returns `apu.sample_rate()` = 32768 << SOUNDBIAS bits 14-15; cycles per sample = 16777216 / rate is exact for all 4 rates, so samples per frame do not drift | PLAN.md Phase 4 critical rule. The grader reads the reference's rate once after boot (lockstep). |
+| 2026-11-05 | Mixer in gbatek DAC units (FIFO +/-0x200, PSG ~+/-0x80, + bias, clip to 10 bits, drop low bits per resolution); i16 = (DAC - bias) << 5. FIFO refill requested at <= 16 bytes after a pop | gbatek "Max Output Levels". Shift 5 chosen because the reference WAVs were ~2x quieter than shift 6 on both celeste and piugba (level only; the grader compares log-mel shapes). |
+| 2026-11-05 | fifo-mixer review minors deferred: block PSG/SOUNDCNT_L writes while master enable is off; name FIFO high-half offsets and SOUNDCNT_H bit fields; mask SOUNDCNT_H bits 4-7; piugba output ~957 samples longer than the reference (cause outside apu, not yet found) | Minor; audio gate first. |
 
 ## Agent and model usage per phase
 
@@ -90,3 +92,4 @@ date, what, why.
 | 2026-11-05 | 3 | ppu-effects | claude-opus-5-5 | phase3/ppu-effects | Merged last, after 1 review round (merge, clean, 6 minor). piugba 0.32 to 0.94 on its partial run |
 | 2026-11-05 | 3 | reviewer (x3, fresh each time) | claude-opus-5-5 | phase3/* | sprites 1, affine-bitmap 1, effects 1 round; no grading (serialised to the integrator) |
 | 2026-11-05 | 3 | executor (integrator) | claude-opus-5-5 | main | Layer contract, PA/PD power-on, merges, serial grading, phase-3 milestone 0.6213 |
+| 2026-11-05 | 4 | apu-fifo-mixer | claude-opus-5-5 | phase4/apu-fifo-mixer | Merged after 1 review round (merge, clean, 7 minor). Audio: celeste 0.886, chip-advance 0.842, piugba 0.684 |
