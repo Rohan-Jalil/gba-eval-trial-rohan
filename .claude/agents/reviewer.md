@@ -11,7 +11,7 @@ Read `CLAUDE.md` and `PLAN.md` first. Then run `git diff main...<branch>` for th
 
 ## Check
 1. **Correctness vs spec.** For each hardware behaviour the diff implements, find the gbatek section
-   (`/var/www/html/test-projects/gba-eval/spec/gbatek.htm`) and compare. Look closely at flags, edge cases
+   (`$GBA_EVAL/spec/gbatek.htm`) and compare. Look closely at flags, edge cases
    (shift by 0/32, misaligned access, register r15 as operand, mode banking), bit positions, and cycle counts.
 2. **Ownership.** The diff touches only the files the worker's role owns (PLAN.md tables). List any other file.
 3. **No per-ROM hacks.** Nothing branches on a ROM's hash, title, game code, or a specific address picked

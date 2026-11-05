@@ -19,14 +19,14 @@ Do not edit any other file. If a shared contract (bus, IO dispatch, IRQ, schedul
 Cargo.toml) has to change, stop and describe the change in your report.
 
 ## Spec
-Your only hardware reference is `/var/www/html/test-projects/gba-eval/spec/gbatek.htm`. Relevant sections:
+Your only hardware reference is `$GBA_EVAL/spec/gbatek.htm`. Relevant sections:
 LCD OBJ - Overview; LCD OBJ - OAM Attributes; LCD OBJ - OAM Rotation/Scaling Parameters; LCD OBJ - VRAM Character (Tile) Mapping; LCD I/O Mosaic Function
 
-Find a section with `grep -n -i "<section title>" /var/www/html/test-projects/gba-eval/spec/gbatek.htm`, then read the lines around it.
+Find a section with `grep -n -i "<section title>" $GBA_EVAL/spec/gbatek.htm`, then read the lines around it.
 Never read another emulator's source, and never write code from memory of one.
 
 ## Tests
-Dev: `/var/www/html/test-projects/gba-eval/corpus/roms/test/tonc/obj-demo.gba`, `/var/www/html/test-projects/gba-eval/corpus/roms/test/tonc/obj-aff.gba`, `/var/www/html/test-projects/gba-eval/corpus/roms/test/nba-hw/ppu-sprite-hmosaic.gba`. Graded subset: bulletgba-gameplay (heavy OAM).
+Dev: `$GBA_EVAL/corpus/roms/test/tonc/obj-demo.gba`, `$GBA_EVAL/corpus/roms/test/tonc/obj-aff.gba`, `$GBA_EVAL/corpus/roms/test/nba-hw/ppu-sprite-hmosaic.gba`. Graded subset: bulletgba-gameplay (heavy OAM).
 
 Smoke set, which must not regress: `aw-arm-alu aw-thumb-alu memory timer-reload dma-priority tonc-snd1`.
 

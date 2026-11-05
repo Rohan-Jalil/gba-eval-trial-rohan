@@ -1,8 +1,9 @@
 # gba-emu: rules for every agent
 
 Read PLAN.md before starting. It defines the phases, the shared contracts and who owns which file.
-The benchmark lives at `/var/www/html/test-projects/gba-eval`, referred to below as `$GBA_EVAL`.
-Use that absolute path; relative paths break inside worktrees.
+The benchmark repo (gba-eval) is referred to below as `$GBA_EVAL`. By default it sits next to this repo's
+parent folder (`../../gba-eval` relative to this repo); export `GBA_EVAL` to point elsewhere. Inside worktrees
+always use the absolute value of `$GBA_EVAL` (`echo $GBA_EVAL`), because relative paths break there.
 
 ## Originality (hard rule)
 - Write all code yourself. Do not read, copy, or paraphrase any existing emulator:

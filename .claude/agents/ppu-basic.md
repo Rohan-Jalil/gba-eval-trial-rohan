@@ -19,14 +19,14 @@ Do not edit any other file. If a shared contract (bus, IO dispatch, IRQ, schedul
 Cargo.toml) has to change, stop and describe the change in your report.
 
 ## Spec
-Your only hardware reference is `/var/www/html/test-projects/gba-eval/spec/gbatek.htm`. Relevant sections:
+Your only hardware reference is `$GBA_EVAL/spec/gbatek.htm`. Relevant sections:
 GBA LCD Video Controller: LCD Dimensions and Timings; LCD I/O Display Control; LCD I/O Interrupts and Status; LCD I/O BG Control; LCD I/O BG Scrolling; LCD VRAM Overview; LCD VRAM Character Data; LCD VRAM BG Screen Data Format (BG Map); LCD VRAM Bitmap BG Modes; LCD Color Palettes. GBA Keypad Input.
 
-Find a section with `grep -n -i "<section title>" /var/www/html/test-projects/gba-eval/spec/gbatek.htm`, then read the lines around it.
+Find a section with `grep -n -i "<section title>" $GBA_EVAL/spec/gbatek.htm`, then read the lines around it.
 Never read another emulator's source, and never write code from memory of one.
 
 ## Tests
-Dev: `run_rom /var/www/html/test-projects/gba-eval/corpus/roms/test/jsmolka/ppu-hello.gba`, `/var/www/html/test-projects/gba-eval/corpus/roms/test/tonc/m3-demo.gba`, `/var/www/html/test-projects/gba-eval/corpus/roms/test/tonc/bm-modes.gba`, `/var/www/html/test-projects/gba-eval/corpus/roms/test/tonc/key-demo.gba`. Armwrestler screens must render legibly.
+Dev: `run_rom $GBA_EVAL/corpus/roms/test/jsmolka/ppu-hello.gba`, `$GBA_EVAL/corpus/roms/test/tonc/m3-demo.gba`, `$GBA_EVAL/corpus/roms/test/tonc/bm-modes.gba`, `$GBA_EVAL/corpus/roms/test/tonc/key-demo.gba`. Armwrestler screens must render legibly.
 
 Smoke set, which must not regress: `aw-arm-alu aw-thumb-alu memory timer-reload dma-priority tonc-snd1`.
 

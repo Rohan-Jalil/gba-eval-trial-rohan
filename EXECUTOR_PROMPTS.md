@@ -66,7 +66,7 @@ every file in PLAN.md section 2 as stubs with the agreed contracts, the 10 ABI e
 BIOS stub, and src/bin/run_rom.rs.
 
 Extra check before merging: compare our frame boundary with Mesen2. With a ROM whose first frames change
-visibly (e.g. /var/www/html/test-projects/gba-eval/corpus/roms/test/tonc/m3-demo.gba), work out where
+visibly (e.g. $GBA_EVAL/corpus/roms/test/tonc/m3-demo.gba), work out where
 the reference's emu_run_frame ends relative to VBlank, using the grader's .ref.png output, and make our
 run_frame end at the same point. Log the finding in NOTES.md.
 

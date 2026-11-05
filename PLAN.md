@@ -5,7 +5,7 @@ functions in `gba-eval/spec/ABI.md`, that scores above the 0.534 baseline on the
 grader's highest reachable score is 0.96, because the `comprehensive` subsystem carries weight but has no tests.
 
 Paths in this document are relative to this repo (`gba-trial/gba-emu`). The benchmark repo is
-`/var/www/html/test-projects/gba-eval`, referred to below as `$GBA_EVAL`.
+gba-eval, referred to below as `$GBA_EVAL` (default `../../gba-eval` relative to this repo).
 
 ## Scope: must-have vs stretch
 

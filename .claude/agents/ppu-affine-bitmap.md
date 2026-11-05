@@ -19,14 +19,14 @@ Do not edit any other file. If a shared contract (bus, IO dispatch, IRQ, schedul
 Cargo.toml) has to change, stop and describe the change in your report.
 
 ## Spec
-Your only hardware reference is `/var/www/html/test-projects/gba-eval/spec/gbatek.htm`. Relevant sections:
+Your only hardware reference is `$GBA_EVAL/spec/gbatek.htm`. Relevant sections:
 LCD I/O BG Rotation/Scaling; LCD VRAM Bitmap BG Modes; LCD I/O BG Control
 
-Find a section with `grep -n -i "<section title>" /var/www/html/test-projects/gba-eval/spec/gbatek.htm`, then read the lines around it.
+Find a section with `grep -n -i "<section title>" $GBA_EVAL/spec/gbatek.htm`, then read the lines around it.
 Never read another emulator's source, and never write code from memory of one.
 
 ## Tests
-Dev: `/var/www/html/test-projects/gba-eval/corpus/roms/test/tonc/sbb-aff.gba`, `/var/www/html/test-projects/gba-eval/corpus/roms/test/tonc/m7-demo.gba`, `/var/www/html/test-projects/gba-eval/corpus/roms/test/tonc/pageflip.gba`, `/var/www/html/test-projects/gba-eval/corpus/roms/test/nba-hw/ppu-bgx.gba`, `/var/www/html/test-projects/gba-eval/corpus/roms/test/nba-hw/ppu-bgpd.gba`. Graded subset: varooom-3d-gameplay, spout-gameplay.
+Dev: `$GBA_EVAL/corpus/roms/test/tonc/sbb-aff.gba`, `$GBA_EVAL/corpus/roms/test/tonc/m7-demo.gba`, `$GBA_EVAL/corpus/roms/test/tonc/pageflip.gba`, `$GBA_EVAL/corpus/roms/test/nba-hw/ppu-bgx.gba`, `$GBA_EVAL/corpus/roms/test/nba-hw/ppu-bgpd.gba`. Graded subset: varooom-3d-gameplay, spout-gameplay.
 
 Smoke set, which must not regress: `aw-arm-alu aw-thumb-alu memory timer-reload dma-priority tonc-snd1`.
 

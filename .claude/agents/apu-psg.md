@@ -19,10 +19,10 @@ Do not edit any other file. If a shared contract (bus, IO dispatch, IRQ, schedul
 Cargo.toml) has to change, stop and describe the change in your report.
 
 ## Spec
-Your only hardware reference is `/var/www/html/test-projects/gba-eval/spec/gbatek.htm`. Relevant sections:
+Your only hardware reference is `$GBA_EVAL/spec/gbatek.htm`. Relevant sections:
 GBA Sound Channel 1 - Tone & Sweep; GBA Sound Channel 2 - Tone; GBA Sound Channel 3 - Wave Output; GBA Sound Channel 4 - Noise; GBA Sound Control Registers
 
-Find a section with `grep -n -i "<section title>" /var/www/html/test-projects/gba-eval/spec/gbatek.htm`, then read the lines around it.
+Find a section with `grep -n -i "<section title>" $GBA_EVAL/spec/gbatek.htm`, then read the lines around it.
 Never read another emulator's source, and never write code from memory of one.
 
 ## Tests

@@ -19,14 +19,14 @@ Do not edit any other file. If a shared contract (bus, IO dispatch, IRQ, schedul
 Cargo.toml) has to change, stop and describe the change in your report.
 
 ## Spec
-Your only hardware reference is `/var/www/html/test-projects/gba-eval/spec/gbatek.htm`. Relevant sections:
+Your only hardware reference is `$GBA_EVAL/spec/gbatek.htm`. Relevant sections:
 GBA Interrupt Control; GBA System Control (HALTCNT); ARM CPU Exceptions; BIOS Functions (Halt, IntrWait, VBlankIntrWait: read only to understand what the stub expects)
 
-Find a section with `grep -n -i "<section title>" /var/www/html/test-projects/gba-eval/spec/gbatek.htm`, then read the lines around it.
+Find a section with `grep -n -i "<section title>" $GBA_EVAL/spec/gbatek.htm`, then read the lines around it.
 Never read another emulator's source, and never write code from memory of one.
 
 ## Tests
-Graded: ppu-vram-mirror. Dev: `/var/www/html/test-projects/gba-eval/corpus/roms/test/nba-hw/haltcnt.gba`, `/var/www/html/test-projects/gba-eval/corpus/roms/test/nba-hw/irq-irq-delay.gba`, `/var/www/html/test-projects/gba-eval/corpus/roms/test/destoer/if-ack.gba`, `/var/www/html/test-projects/gba-eval/corpus/roms/test/destoer/isr.gba`, `/var/www/html/test-projects/gba-eval/corpus/roms/test/tonc/irq-demo.gba`, `/var/www/html/test-projects/gba-eval/corpus/roms/test/tonc/swi-demo.gba`.
+Graded: ppu-vram-mirror. Dev: `$GBA_EVAL/corpus/roms/test/nba-hw/haltcnt.gba`, `$GBA_EVAL/corpus/roms/test/nba-hw/irq-irq-delay.gba`, `$GBA_EVAL/corpus/roms/test/destoer/if-ack.gba`, `$GBA_EVAL/corpus/roms/test/destoer/isr.gba`, `$GBA_EVAL/corpus/roms/test/tonc/irq-demo.gba`, `$GBA_EVAL/corpus/roms/test/tonc/swi-demo.gba`.
 
 Smoke set, which must not regress: `aw-arm-alu aw-thumb-alu memory timer-reload dma-priority tonc-snd1`.
 
