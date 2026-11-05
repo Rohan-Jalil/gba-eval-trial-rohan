@@ -163,12 +163,13 @@ fn width_in_bytes(width: Width) -> u32 {
     }
 }
 
+// One slice bounds check per access instead of one per byte.
 fn read_le16(memory: &[u8], offset: usize) -> u16 {
-    u16::from_le_bytes([memory[offset], memory[offset + 1]])
+    u16::from_le_bytes(memory[offset..offset + 2].try_into().unwrap())
 }
 
 fn read_le32(memory: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes([memory[offset], memory[offset + 1], memory[offset + 2], memory[offset + 3]])
+    u32::from_le_bytes(memory[offset..offset + 4].try_into().unwrap())
 }
 
 fn write_le16(memory: &mut [u8], offset: usize, value: u16) {
