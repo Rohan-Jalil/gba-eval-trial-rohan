@@ -176,6 +176,8 @@ impl Ppu {
         let window1 = WindowSpan::new(self.register(WIN0H + 2), self.register(WIN0V + 2), line);
         let (winin, winout) = (self.register(WININ), self.register(WINOUT));
         let any_window = dispcnt & (DISPCNT_WINDOW0_ENABLE | DISPCNT_WINDOW1_ENABLE | DISPCNT_OBJ_WINDOW_ENABLE) != 0;
+        // gbatek: "Both DISPCNT Bits 12 and 15 must be set when defining OBJ Window region(s)."
+        let obj_window_on = dispcnt & DISPCNT_OBJ_WINDOW_ENABLE != 0 && layers.sprites_enabled;
 
         let window_control_at = |x: usize| -> u8 {
             if !any_window {
@@ -184,7 +186,7 @@ impl Ppu {
                 winin as u8
             } else if dispcnt & DISPCNT_WINDOW1_ENABLE != 0 && window1.contains(x) {
                 (winin >> 8) as u8
-            } else if dispcnt & DISPCNT_OBJ_WINDOW_ENABLE != 0 && layers.obj_window[x] {
+            } else if obj_window_on && layers.obj_window[x] {
                 (winout >> 8) as u8
             } else {
                 winout as u8
