@@ -163,12 +163,6 @@ fn width_in_bytes(width: Width) -> u32 {
     }
 }
 
-/// Offset into VRAM: 96 KiB mirrored in 128 KiB steps, the upper 32 KiB mirroring 0x10000-0x17FFF.
-fn vram_offset(address: u32) -> usize {
-    let offset = address & 0x1FFFF;
-    (if offset >= 0x18000 { offset - 0x8000 } else { offset }) as usize
-}
-
 fn read_le16(memory: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes([memory[offset], memory[offset + 1]])
 }
@@ -300,6 +294,20 @@ impl Bus {
         self.cart.sram_write8(address, rotated as u8);
     }
 
+    /// Offset into VRAM: 96K repeated in 128K steps, 0x18000-0x1FFFF mirroring 0x10000-0x17FFF
+    /// (gbatek: Memory Mirrors). In bitmap modes 3-5, 0x18000-0x1BFFF is not mapped: reads give 0
+    /// and writes are dropped (measured: nba-hw ppu-vram-mirror reference; gbatek is silent).
+    fn vram_offset(&self, address: u32) -> Option<usize> {
+        let offset = (address & 0x1FFFF) as usize;
+        if offset < 0x18000 {
+            Some(offset)
+        } else if offset < 0x1C000 && self.vram_bg_area_size() > 0x10000 {
+            None
+        } else {
+            Some(offset - 0x8000)
+        }
+    }
+
     /// Size of the BG part of VRAM, where byte writes are allowed: 64K in tiled modes, 80K in
     /// bitmap modes 3-5 (gbatek: Writing 8bit Data to Video Memory).
     fn vram_bg_area_size(&self) -> usize {
@@ -356,7 +364,9 @@ impl Bus {
             Region::Ewram => read_le16(&self.ewram, (address as usize) & (EWRAM_SIZE - 1)),
             Region::Iwram => read_le16(&self.iwram, (address as usize) & (IWRAM_SIZE - 1)),
             Region::Palette => read_le16(&self.ppu.palette, (address & 0x3FF) as usize),
-            Region::Vram => read_le16(&self.ppu.vram, vram_offset(address)),
+            Region::Vram => self
+                .vram_offset(address)
+                .map_or(0, |offset| read_le16(&self.ppu.vram, offset)),
             Region::Oam => read_le16(&self.ppu.oam, (address & 0x3FF) as usize),
             Region::Rom => self.cart.rom_read16(address),
             Region::Io | Region::Sram | Region::Unmapped => 0,
@@ -383,7 +393,7 @@ impl Bus {
             Region::Iwram => self.iwram[(address as usize) & (IWRAM_SIZE - 1)],
             Region::Io => self.io_read8(io_offset(address)),
             Region::Palette => self.ppu.palette[(address & 0x3FF) as usize],
-            Region::Vram => self.ppu.vram[vram_offset(address)],
+            Region::Vram => self.vram_offset(address).map_or(0, |offset| self.ppu.vram[offset]),
             Region::Oam => self.ppu.oam[(address & 0x3FF) as usize],
             Region::Rom => self.cart.rom_read8(address),
             Region::Sram => self.cart.sram_read8(address),
@@ -403,7 +413,9 @@ impl Bus {
             Region::Iwram => read_le16(&self.iwram, (address as usize) & (IWRAM_SIZE - 1)),
             Region::Io => self.io_read16(io_offset(address)),
             Region::Palette => read_le16(&self.ppu.palette, (address & 0x3FF) as usize),
-            Region::Vram => read_le16(&self.ppu.vram, vram_offset(address)),
+            Region::Vram => self
+                .vram_offset(address)
+                .map_or(0, |offset| read_le16(&self.ppu.vram, offset)),
             Region::Oam => read_le16(&self.ppu.oam, (address & 0x3FF) as usize),
             Region::Rom => self.cart.rom_read16(address),
             Region::Sram => unreachable!("SRAM handled before alignment"),
@@ -422,7 +434,9 @@ impl Bus {
             Region::Iwram => read_le32(&self.iwram, (address as usize) & (IWRAM_SIZE - 1)),
             Region::Io => self.io_read32(io_offset(address)),
             Region::Palette => read_le32(&self.ppu.palette, (address & 0x3FF) as usize),
-            Region::Vram => read_le32(&self.ppu.vram, vram_offset(address)),
+            Region::Vram => self
+                .vram_offset(address)
+                .map_or(0, |offset| read_le32(&self.ppu.vram, offset)),
             Region::Oam => read_le32(&self.ppu.oam, (address & 0x3FF) as usize),
             Region::Rom => {
                 let low = self.cart.rom_read16(address) as u32;
@@ -444,10 +458,12 @@ impl Bus {
                 write_le16(&mut self.ppu.palette, (address & 0x3FE) as usize, value as u16 * 0x0101)
             }
             Region::Vram => {
-                let offset = vram_offset(address & !1);
-                if offset < self.vram_bg_area_size() {
-                    write_le16(&mut self.ppu.vram, offset, value as u16 * 0x0101);
-                } // byte writes to OBJ VRAM are ignored
+                // Byte writes to OBJ VRAM are ignored.
+                if let Some(offset) = self.vram_offset(address & !1) {
+                    if offset < self.vram_bg_area_size() {
+                        write_le16(&mut self.ppu.vram, offset, value as u16 * 0x0101);
+                    }
+                }
             }
             Region::Oam => {} // OAM ignores 8-bit writes
             Region::Sram => self.cart.sram_write8(address, value),
@@ -465,7 +481,11 @@ impl Bus {
             Region::Iwram => write_le16(&mut self.iwram, (address as usize) & (IWRAM_SIZE - 1), value),
             Region::Io => self.io_write16(io_offset(address), value),
             Region::Palette => write_le16(&mut self.ppu.palette, (address & 0x3FF) as usize, value),
-            Region::Vram => write_le16(&mut self.ppu.vram, vram_offset(address), value),
+            Region::Vram => {
+                if let Some(offset) = self.vram_offset(address) {
+                    write_le16(&mut self.ppu.vram, offset, value);
+                }
+            }
             Region::Oam => write_le16(&mut self.ppu.oam, (address & 0x3FF) as usize, value),
             Region::Sram => unreachable!("SRAM handled before alignment"),
             Region::Rom => self.cart.rom_write16(address, value),
@@ -483,7 +503,11 @@ impl Bus {
             Region::Iwram => write_le32(&mut self.iwram, (address as usize) & (IWRAM_SIZE - 1), value),
             Region::Io => self.io_write32(io_offset(address), value),
             Region::Palette => write_le32(&mut self.ppu.palette, (address & 0x3FF) as usize, value),
-            Region::Vram => write_le32(&mut self.ppu.vram, vram_offset(address), value),
+            Region::Vram => {
+                if let Some(offset) = self.vram_offset(address) {
+                    write_le32(&mut self.ppu.vram, offset, value);
+                }
+            }
             Region::Oam => write_le32(&mut self.ppu.oam, (address & 0x3FF) as usize, value),
             Region::Sram => unreachable!("SRAM handled before alignment"),
             Region::Rom => {
