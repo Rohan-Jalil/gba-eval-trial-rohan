@@ -165,7 +165,7 @@ impl ToneChannel {
 
     /// Restart (NRx4 bit 15): reload length and envelope, restart the frequency timer.
     fn restart(&mut self, duty_envelope: u16) {
-        self.playing = true;
+        self.playing = envelope_can_sound(duty_envelope);
         self.length.load(64, duty_envelope & 0x3F);
         self.envelope.restart(duty_envelope);
         self.countdown = self.step_period();
@@ -278,7 +278,7 @@ impl NoiseChannel {
 
     /// Restart (NR44 bit 15): reload length and envelope, seed X=40h or X=4000h.
     fn restart(&mut self, envelope_control: u16, control: u16) {
-        self.playing = true;
+        self.playing = envelope_can_sound(envelope_control);
         self.length.load(64, envelope_control & 0x3F);
         self.envelope.restart(envelope_control);
         self.shift_register = if control & 0x0008 != 0 { 0x40 } else { 0x4000 };
@@ -470,6 +470,9 @@ impl Psg {
                 if low_byte_written {
                     self.noise.length.load(64, value & 0x3F);
                 }
+                if !envelope_can_sound(value) {
+                    self.noise.playing = false;
+                }
             }
             SOUND4CNT_H => {
                 if mask & 0xFF00 != 0 {
@@ -489,6 +492,9 @@ impl Psg {
         let tone = &mut self.tone_channels[if offset == SOUND1CNT_H { 0 } else { 1 }];
         if low_byte_written {
             tone.length.load(64, value & 0x3F);
+        }
+        if !envelope_can_sound(value) {
+            tone.playing = false;
         }
     }
 
@@ -605,6 +611,7 @@ mod tests {
     #[test]
     fn partial_byte_frequency_writes_merge() {
         let mut psg = Psg::new();
+        psg.io_write16(SOUND1CNT_H, 0xF000, 0xFFFF); // envelope volume 15, so a restart plays
         psg.io_write16(SOUND1CNT_X, 0x0034, 0x00FF); // NR13: low 8 bits
         psg.io_write16(SOUND1CNT_X, 0x0500, 0xFF00); // NR14: bits 8-10, no restart
         assert_eq!(psg.tone_channels[0].frequency, 0x534);
@@ -614,6 +621,19 @@ mod tests {
         psg.io_write16(SOUND1CNT_X, TRIGGER_BIT, 0xFF00);
         assert_eq!(psg.tone_channels[0].frequency, 0x099);
         assert_eq!(psg.active_channels(), 1);
+    }
+
+    #[test]
+    fn silent_envelope_reads_as_not_playing() {
+        let mut psg = Psg::new();
+        psg.io_write16(SOUND2CNT_L, 0x0000, 0xFFFF); // volume 0, decrease
+        psg.io_write16(SOUND2CNT_H, TRIGGER_BIT, 0xFF00);
+        assert_eq!(psg.active_channels(), 0);
+        psg.io_write16(SOUND2CNT_L, 0x0800, 0xFFFF); // volume 0, increase: can sound
+        psg.io_write16(SOUND2CNT_H, TRIGGER_BIT, 0xFF00);
+        assert_eq!(psg.active_channels(), 0b0010);
+        psg.io_write16(SOUND2CNT_L, 0x0000, 0xFFFF); // writing a silent envelope stops it
+        assert_eq!(psg.active_channels(), 0);
     }
 
     #[test]
@@ -638,4 +658,12 @@ mod tests {
         assert_eq!(psg.io_read16(WAVE_RAM_START), 0x1234);
         assert_eq!(psg.io_read16(SOUND2CNT_L), 0);
     }
+}
+
+/// Whether an envelope setting (bits 11-15: direction and initial volume) can ever make sound.
+/// Initial volume 0 with "decrease" stays silent forever, and the channel reads as not playing
+/// in SOUNDCNT_X. gbatek only says "0=No Sound"; the not-playing status is measured from the
+/// mgba-io-read reference (SOUNDCNT_X row), which expects these channels to read as off.
+fn envelope_can_sound(envelope_control: u16) -> bool {
+    envelope_control & 0xF800 != 0
 }
