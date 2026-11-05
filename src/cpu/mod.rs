@@ -11,8 +11,7 @@
 //!   `step()` advances to the next sequential instruction.
 //! - To switch state (BX), set or clear `CPSR_THUMB` with `set_thumb_state` before calling `branch_to`.
 
-#![allow(dead_code)] // part of the API is used only by the decoders and the Phase 2 IRQ worker
-
+#[allow(dead_code)] // shifter and add/sub helpers are unused until arm.rs/thumb.rs call them; remove then
 mod alu;
 mod arm;
 mod thumb;
@@ -71,17 +70,25 @@ fn bank_of(mode: u32) -> Bank {
     }
 }
 
-/// MSR field mask bits 16-19 of the opcode ("fsxc"), each enabling one byte of the PSR.
+/// MSR field mask bits of the opcode (gbatek: ARM Opcodes: PSR Transfer (MRS, MSR)). Only the
+/// flags and control fields exist on the ARM7TDMI; s (bit 18) and x (bit 17) select reserved
+/// bits 8-23, which MSR never changes.
 pub const MSR_FIELD_CONTROL: u32 = 1 << 16; // c: bits 0-7
-pub const MSR_FIELD_EXTENSION: u32 = 1 << 17; // x: bits 8-15
-pub const MSR_FIELD_STATUS: u32 = 1 << 18; // s: bits 16-23
+pub const MSR_FIELD_EXTENSION: u32 = 1 << 17; // x: reserved bits 8-15, ignored
+pub const MSR_FIELD_STATUS: u32 = 1 << 18; // s: reserved bits 16-23, ignored
 pub const MSR_FIELD_FLAGS: u32 = 1 << 19; // f: bits 24-31
 
-/// Byte mask of the PSR bits selected by an MSR field mask (opcode bits 16-19).
-fn psr_byte_mask(field_mask: u32) -> u32 {
-    (0..4)
-        .filter(|byte| field_mask & (MSR_FIELD_CONTROL << byte) != 0)
-        .fold(0, |mask, byte| mask | (0xFF << (byte * 8)))
+/// PSR bits an MSR may write for the given field mask (opcode bits 16-19). The unused bits
+/// 24-27 of the flags field are writable; reserved bits 8-23 never are.
+fn msr_writable_bits(field_mask: u32) -> u32 {
+    let mut writable = 0;
+    if field_mask & MSR_FIELD_FLAGS != 0 {
+        writable |= 0xFF00_0000;
+    }
+    if field_mask & MSR_FIELD_CONTROL != 0 {
+        writable |= 0x0000_00FF;
+    }
+    writable
 }
 
 pub struct Cpu {
@@ -272,19 +279,21 @@ impl Cpu {
         }
     }
 
-    /// MSR to CPSR: write the bytes selected by `field_mask` (opcode bits 16-19). In User mode only
-    /// the flags byte changes. The T bit is never changed by MSR (gbatek: "Do not change manually").
+    /// MSR to CPSR: write the flags and/or control byte selected by `field_mask` (opcode bits
+    /// 16-19). In User mode only the flags byte changes; T is never changed by MSR
+    /// (gbatek: ARM Opcodes: PSR Transfer (MRS, MSR)).
     pub fn write_cpsr_fields(&mut self, value: u32, field_mask: u32) {
-        let mut writable = psr_byte_mask(field_mask) & !CPSR_THUMB;
+        let mut writable = msr_writable_bits(field_mask) & !CPSR_THUMB;
         if self.mode() == MODE_USER {
             writable &= 0xFF00_0000;
         }
         self.set_cpsr((self.cpsr & !writable) | (value & writable));
     }
 
-    /// MSR to SPSR: write the bytes selected by `field_mask` (opcode bits 16-19).
+    /// MSR to SPSR: write the flags and/or control byte selected by `field_mask` (opcode bits
+    /// 16-19). Reserved bits 8-23 are kept; T is writable so a handler can pick the return state.
     pub fn write_spsr_fields(&mut self, value: u32, field_mask: u32) {
-        let writable = psr_byte_mask(field_mask);
+        let writable = msr_writable_bits(field_mask);
         self.set_spsr((self.spsr() & !writable) | (value & writable));
     }
 
@@ -483,6 +492,66 @@ mod tests {
         cpu.set_spsr(0x0000_0010);
         cpu.write_spsr_fields(0x6000_00FF, MSR_FIELD_FLAGS);
         assert_eq!(cpu.spsr(), 0x6000_0010);
+    }
+
+    #[test]
+    fn msr_never_changes_reserved_bits() {
+        let mut cpu = cpu_in_mode(MODE_SYSTEM);
+        let all_fields = MSR_FIELD_FLAGS | MSR_FIELD_STATUS | MSR_FIELD_EXTENSION | MSR_FIELD_CONTROL;
+        cpu.write_cpsr_fields(0xFFFF_FF00 | MODE_SYSTEM, all_fields);
+        assert_eq!(cpu.cpsr, 0xFF00_0000 | MODE_SYSTEM, "bits 8-23 stay clear, flags field bits 24-27 writable");
+        cpu.set_cpsr(MODE_IRQ);
+        cpu.set_spsr(0);
+        cpu.write_spsr_fields(0xFFFF_FFFF, all_fields);
+        assert_eq!(cpu.spsr(), 0xFF00_00FF, "SPSR reserved bits kept, T writable");
+    }
+
+    /// Bus with `halfwords` stored at the start of IWRAM (0x03000000).
+    fn bus_with_iwram_code(halfwords: &[u16]) -> Bus {
+        let mut bus = Bus::new(&[]);
+        for (index, &halfword) in halfwords.iter().enumerate() {
+            bus.write16(0x0300_0000 + 2 * index as u32, halfword);
+        }
+        bus.take_access_cycles();
+        bus
+    }
+
+    const IWRAM_START: u32 = 0x0300_0000;
+
+    #[test]
+    fn step_executes_arm_opcode_and_advances_pc() {
+        // MOV R0,R0 (0xE1A00000): condition AL, no visible effect besides the PC.
+        let mut bus = bus_with_iwram_code(&[0x0000, 0xE1A0]);
+        let mut cpu = cpu_in_mode(MODE_SYSTEM);
+        cpu.registers[PROGRAM_COUNTER] = IWRAM_START;
+        let cycles = cpu.step(&mut bus);
+        assert_eq!(cpu.registers[PROGRAM_COUNTER], IWRAM_START + 4);
+        assert!(cycles >= 1, "at least the IWRAM fetch");
+    }
+
+    #[test]
+    fn step_skips_arm_opcode_whose_condition_fails() {
+        // MOVNE R0,#1 (0x13A00001) with Z=1: skipped, costs only the 1-cycle IWRAM fetch.
+        let mut bus = bus_with_iwram_code(&[0x0001, 0x13A0]);
+        let mut cpu = cpu_in_mode(MODE_SYSTEM | FLAG_ZERO);
+        cpu.registers[PROGRAM_COUNTER] = IWRAM_START;
+        let cycles = cpu.step(&mut bus);
+        assert_eq!(cpu.registers[0], 0);
+        assert_eq!(cpu.registers[PROGRAM_COUNTER], IWRAM_START + 4);
+        assert_eq!(cycles, 1);
+    }
+
+    #[test]
+    fn step_fetches_thumb_halfwords() {
+        // Two THUMB MOV R8,R8 (0x46C0) at 0x03000000 and 0x03000002.
+        let mut bus = bus_with_iwram_code(&[0x46C0, 0x46C0]);
+        let mut cpu = cpu_in_mode(MODE_SYSTEM | CPSR_THUMB);
+        cpu.registers[PROGRAM_COUNTER] = IWRAM_START;
+        cpu.step(&mut bus);
+        assert_eq!(cpu.registers[PROGRAM_COUNTER], IWRAM_START + 2);
+        cpu.step(&mut bus);
+        assert_eq!(cpu.registers[PROGRAM_COUNTER], IWRAM_START + 4);
+        assert!(cpu.in_thumb_state());
     }
 
     #[test]
