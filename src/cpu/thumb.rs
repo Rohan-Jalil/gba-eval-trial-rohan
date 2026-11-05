@@ -318,27 +318,34 @@ fn adjust_stack_pointer(cpu: &mut Cpu, opcode: u32) -> u32 {
     0
 }
 
-/// Registers of a THUMB register list, lowest first; the extra register (LR/PC) goes last.
-/// An empty list transfers R15 alone (gbatek: "Strange Effects on Invalid Rlist's", ARMv4).
-fn register_list(opcode: u32, extra_register: Option<usize>) -> Vec<usize> {
-    let mut registers: Vec<usize> = (0..8).filter(|&index| opcode & (1 << index) != 0).collect();
-    registers.extend(extra_register);
-    registers
+/// Register list as a bit mask of R0-R15: Rlist in bits 0-7 plus the optional LR/PC bit, so
+/// ascending bit order puts the extra register last. An empty list transfers R15 alone
+/// (gbatek: "Strange Effects on Invalid Rlist's", ARMv4).
+fn register_list(opcode: u32, extra_register: Option<usize>) -> u32 {
+    let low_registers = opcode & 0xFF;
+    match extra_register {
+        Some(register) => low_registers | (1 << register),
+        None => low_registers,
+    }
 }
 
 /// Bytes a register list occupies; an empty list still moves the base by 40h.
-fn register_list_size(registers: &[usize]) -> u32 {
-    if registers.is_empty() { 0x40 } else { registers.len() as u32 * 4 }
+fn register_list_size(registers: u32) -> u32 {
+    if registers == 0 { 0x40 } else { registers.count_ones() * 4 }
 }
 
-/// Store `registers` at ascending addresses from `start`. R15 stores as $+6 (guess, see
-/// `store_multiple_empty_list_value`).
-fn store_registers(cpu: &Cpu, bus: &mut Bus, registers: &[usize], start: u32) {
-    if registers.is_empty() {
-        bus.write32(start & !3, store_multiple_empty_list_value(cpu));
+/// Store the listed registers at ascending addresses from `start`; an empty list stores R15
+/// as $+6 (guess, see `store_multiple_empty_list_value`).
+fn store_registers(cpu: &Cpu, bus: &mut Bus, registers: u32, start: u32) {
+    let mut address = start & !3;
+    if registers == 0 {
+        bus.write32(address, store_multiple_empty_list_value(cpu));
     }
-    for (slot, &register) in registers.iter().enumerate() {
-        bus.write32((start & !3).wrapping_add(slot as u32 * 4), cpu.registers[register]);
+    for register in 0..16 {
+        if registers & (1 << register) != 0 {
+            bus.write32(address, cpu.registers[register]);
+            address = address.wrapping_add(4);
+        }
     }
 }
 
@@ -348,15 +355,19 @@ fn store_multiple_empty_list_value(cpu: &Cpu) -> u32 {
     cpu.registers[PROGRAM_COUNTER].wrapping_add(2)
 }
 
-/// Load `registers` from ascending addresses from `start`; an empty list loads R15.
-fn load_registers(cpu: &mut Cpu, bus: &mut Bus, registers: &[usize], start: u32) {
-    if registers.is_empty() {
-        let target = bus.read32(start & !3);
+/// Load the listed registers from ascending addresses from `start`; an empty list loads R15.
+fn load_registers(cpu: &mut Cpu, bus: &mut Bus, registers: u32, start: u32) {
+    let mut address = start & !3;
+    if registers == 0 {
+        let target = bus.read32(address);
         cpu.branch_to(target);
     }
-    for (slot, &register) in registers.iter().enumerate() {
-        let value = bus.read32((start & !3).wrapping_add(slot as u32 * 4));
-        cpu.write_register(register, value);
+    for register in 0..16 {
+        if registers & (1 << register) != 0 {
+            let value = bus.read32(address);
+            cpu.write_register(register, value);
+            address = address.wrapping_add(4);
+        }
     }
 }
 
@@ -367,13 +378,13 @@ fn push_pop(cpu: &mut Cpu, bus: &mut Bus, opcode: u32) -> u32 {
     let stack_pointer = cpu.registers[STACK_POINTER];
     if is_pop {
         let registers = register_list(opcode, with_extra.then_some(PROGRAM_COUNTER));
-        load_registers(cpu, bus, &registers, stack_pointer);
-        cpu.registers[STACK_POINTER] = stack_pointer.wrapping_add(register_list_size(&registers));
+        load_registers(cpu, bus, registers, stack_pointer);
+        cpu.registers[STACK_POINTER] = stack_pointer.wrapping_add(register_list_size(registers));
         1
     } else {
         let registers = register_list(opcode, with_extra.then_some(LINK_REGISTER));
-        let start = stack_pointer.wrapping_sub(register_list_size(&registers));
-        store_registers(cpu, bus, &registers, start);
+        let start = stack_pointer.wrapping_sub(register_list_size(registers));
+        store_registers(cpu, bus, registers, start);
         cpu.registers[STACK_POINTER] = start;
         0
     }
@@ -384,19 +395,21 @@ fn load_store_multiple(cpu: &mut Cpu, bus: &mut Bus, opcode: u32) -> u32 {
     let base_register = low_register(opcode, 8);
     let base = cpu.registers[base_register];
     let registers = register_list(opcode, None);
-    let final_base = base.wrapping_add(register_list_size(&registers));
+    let base_in_list = registers & (1 << base_register) != 0;
+    let final_base = base.wrapping_add(register_list_size(registers));
     if opcode & (1 << 11) != 0 {
-        load_registers(cpu, bus, &registers, base);
-        if !registers.contains(&base_register) {
+        load_registers(cpu, bus, registers, base);
+        if !base_in_list {
             cpu.registers[base_register] = final_base;
         }
         1
     } else {
-        // Rb stores its old value only when it is the first register of the list.
-        if registers.first().is_some_and(|&first| first != base_register) {
+        // Rb stores its old value only when it is the lowest (first) register of the list.
+        let base_is_first = registers.trailing_zeros() as usize == base_register;
+        if base_in_list && !base_is_first {
             cpu.registers[base_register] = final_base;
         }
-        store_registers(cpu, bus, &registers, base);
+        store_registers(cpu, bus, registers, base);
         cpu.registers[base_register] = final_base;
         0
     }
