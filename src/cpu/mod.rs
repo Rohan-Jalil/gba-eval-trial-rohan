@@ -164,7 +164,28 @@ impl Cpu {
             self.advance_if_not_branched(instruction_address, 4);
             cycles
         };
+        if self.pipeline_flushed {
+            self.charge_pipeline_refill(bus);
+        }
         internal_cycles + bus.take_access_cycles()
+    }
+
+    /// Charge the extra fetch of a pipeline refill after any write to R15 or exception entry
+    /// (gbatek: ARM CPU Instruction Cycle Times, "+1S+1N if R15 loaded", B/BL/SWI/trap 2S+1N).
+    ///
+    /// Each step charges the fetch of its own opcode, so a sequential run costs 1S per opcode.
+    /// A refill fetches the target (1N) and the opcode after it (1S) before the target executes.
+    /// Here the target is read once as 1N, and the target's own fetch in the next step is
+    /// forced to 1S; the step after that continues sequentially as usual.
+    fn charge_pipeline_refill(&mut self, bus: &mut Bus) {
+        let target = self.registers[PROGRAM_COUNTER];
+        bus.force_next_access_sequential(false);
+        if self.in_thumb_state() {
+            bus.read16(target);
+        } else {
+            bus.read32(target);
+        }
+        bus.force_next_access_sequential(true);
     }
 
     /// Between instructions: idle while halted, then take a pending IRQ (gbatek: GBA Interrupt
@@ -182,6 +203,7 @@ impl Cpu {
         }
         if bus.irq.pending() && self.cpsr & CPSR_IRQ_DISABLE == 0 {
             self.enter_exception(Exception::Interrupt);
+            self.charge_pipeline_refill(bus);
         }
         None
     }
@@ -195,7 +217,7 @@ impl Cpu {
     // ---- PC and registers ----
 
     /// Jump to `target`, aligned to 4 (ARM) or 2 (THUMB) for the current state, and flush the
-    /// pipeline. Instruction-cycle refill costs are not charged yet (Phase 5 timing).
+    /// pipeline. `step()` charges the refill fetches afterwards.
     pub fn branch_to(&mut self, target: u32) {
         let alignment_mask = if self.in_thumb_state() { !1 } else { !3 };
         self.registers[PROGRAM_COUNTER] = target & alignment_mask;
