@@ -174,6 +174,24 @@ impl Timers {
         }
     }
 
+    /// Cycles of `step` until the earliest overflow of a running timer that counts cycles
+    /// (count-up timers only overflow when the timer below them does). u32::MAX if none runs.
+    pub fn cycles_until_overflow(&self) -> u32 {
+        let mut earliest = u32::MAX;
+        for (index, timer) in self.timers.iter().enumerate() {
+            let counts_up = index > 0 && timer.control & CONTROL_COUNT_UP != 0;
+            if !timer.running() || counts_up {
+                continue;
+            }
+            let ticks_to_overflow = 0x1_0000 - timer.counter as u32;
+            let cycles_to_overflow =
+                timer.start_delay + (ticks_to_overflow << timer.prescaler_shift()) - timer.prescaler_cycles;
+            earliest = earliest.min(cycles_to_overflow);
+        }
+        // Cycles already run ahead by `catch_up` are skipped by the next `step`.
+        earliest.saturating_add(self.cycles_already_run)
+    }
+
     pub fn io_read16(&mut self, offset: u32) -> u16 {
         let timer = &self.timers[timer_index(offset)];
         if offset & 2 == 0 {

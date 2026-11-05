@@ -163,12 +163,13 @@ fn width_in_bytes(width: Width) -> u32 {
     }
 }
 
+// One slice bounds check per access instead of one per byte.
 fn read_le16(memory: &[u8], offset: usize) -> u16 {
-    u16::from_le_bytes([memory[offset], memory[offset + 1]])
+    u16::from_le_bytes(memory[offset..offset + 2].try_into().unwrap())
 }
 
 fn read_le32(memory: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes([memory[offset], memory[offset + 1], memory[offset + 2], memory[offset + 3]])
+    u32::from_le_bytes(memory[offset..offset + 4].try_into().unwrap())
 }
 
 fn write_le16(memory: &mut [u8], offset: usize, value: u16) {
@@ -209,6 +210,13 @@ pub struct Bus {
     executing_thumb: bool,
     /// The last opcode word prefetched while executing inside the BIOS (BIOS read protection).
     last_bios_prefetch: u32,
+    /// CPU cycles that PPU, timers and APU have not been advanced by yet. gba.rs defers them
+    /// while no component event (IRQ, DMA trigger, sample) can fall inside them; see
+    /// `Gba::run_frame`.
+    pub deferred_component_cycles: u32,
+    /// Deferred cycles at which the earliest component event can happen; 0 forces a catch-up
+    /// at the end of the current step.
+    pub cycles_until_component_event: u32,
 }
 
 impl Bus {
@@ -234,7 +242,19 @@ impl Bus {
             executing_thumb: false,
             // gbatek: after startup the protected value is the opcode at [00DCh+8].
             last_bios_prefetch: bios_read(BIOS_STARTUP_PREFETCH_ADDRESS, 4),
+            deferred_component_cycles: 0,
+            cycles_until_component_event: 0,
         }
+    }
+
+    /// Bring PPU, timers and APU up to date before an IO access sees or changes their state.
+    /// The access may change when the next event happens, so the next step end recomputes it.
+    pub fn catch_up_components(&mut self) {
+        let deferred_cycles = std::mem::take(&mut self.deferred_component_cycles);
+        if deferred_cycles != 0 {
+            crate::gba::advance_components(self, deferred_cycles);
+        }
+        self.cycles_until_component_event = 0;
     }
 
     /// Return and reset the cycles spent on bus accesses.

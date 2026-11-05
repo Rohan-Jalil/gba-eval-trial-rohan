@@ -115,8 +115,9 @@ pub struct Cpu {
 const MAX_HALT_STEP_CYCLES: u32 = 16;
 
 /// Cycles a halted CPU idles in one step: up to the next PPU HBlank/line boundary, capped.
+/// The PPU may lag by the cycles gba.rs has deferred, which never reach a boundary.
 fn halted_cycles(bus: &Bus) -> u32 {
-    let line_cycle = bus.ppu.line_cycle;
+    let line_cycle = bus.ppu.line_cycle + bus.deferred_component_cycles;
     let next_boundary = if line_cycle < HBLANK_START_CYCLE { HBLANK_START_CYCLE } else { CYCLES_PER_LINE };
     (next_boundary - line_cycle).clamp(1, MAX_HALT_STEP_CYCLES)
 }

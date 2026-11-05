@@ -215,6 +215,14 @@ impl Ppu {
         events
     }
 
+    /// Cycles until the next HBlank start or line start, the only points where `step` does
+    /// anything besides counting.
+    pub fn cycles_until_line_event(&self) -> u32 {
+        let next_boundary =
+            if self.line_cycle < HBLANK_START_CYCLE { HBLANK_START_CYCLE } else { CYCLES_PER_LINE };
+        next_boundary - self.line_cycle
+    }
+
     /// HBlank begins: draw the finished visible line, set the flag, raise IRQ.
     /// gbatek DISPSTAT: H-Blank conditions occur on every line, including VBlank lines.
     fn enter_hblank(&mut self, irq: &mut Irq, events: &mut PpuEvents) {

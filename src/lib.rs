@@ -157,3 +157,57 @@ pub extern "C" fn emu_audio_rate() -> i32 {
         None => 32768,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A corpus ROM with sound and title-screen input; the test skips if the benchmark is absent.
+    const DETERMINISM_ROM: &str = "/var/www/html/test-projects/gba-eval/corpus/roms/homebrew/heartwrench-advance.gba";
+    const FRAMES_PER_RUN: u32 = 100;
+
+    /// Keys held on `frame`: Start, then A, so the run leaves the title screen.
+    fn keys_for_frame(frame: u32) -> u32 {
+        const KEY_A: u32 = 1 << 0;
+        const KEY_START: u32 = 1 << 3;
+        match frame {
+            30..=35 => KEY_START,
+            60..=65 => KEY_A,
+            _ => 0,
+        }
+    }
+
+    /// FNV-1a over every frame's framebuffer, audio samples and sample rate.
+    fn run_and_hash() -> u64 {
+        let mut hash: u64 = 0xCBF2_9CE4_8422_2325;
+        let mut mix = |value: u32| {
+            hash ^= value as u64;
+            hash = hash.wrapping_mul(0x0100_0000_01B3);
+        };
+        for frame in 0..FRAMES_PER_RUN {
+            emu_set_keys(keys_for_frame(frame));
+            emu_run_frame();
+            emulator().framebuffer.iter().for_each(|&pixel| mix(pixel));
+            let pairs = emu_audio_samples() as usize;
+            emulator().audio_buffer[..pairs * 2].iter().for_each(|&sample| mix(sample as u16 as u32));
+            mix(emu_audio_rate() as u32);
+        }
+        hash
+    }
+
+    #[test]
+    fn reset_reproduces_load_rom_exactly() {
+        let Ok(rom) = std::fs::read(DETERMINISM_ROM) else {
+            eprintln!("skipping: {DETERMINISM_ROM} not found");
+            return;
+        };
+        assert_eq!(emu_init(), 1);
+        // SAFETY: the ROM buffer holds MAX_ROM_SIZE bytes and the corpus ROM is smaller.
+        unsafe { std::ptr::copy_nonoverlapping(rom.as_ptr(), emu_rom_buffer(), rom.len()) };
+        assert_eq!(emu_load_rom(rom.len() as i32), 1);
+        let after_load = run_and_hash();
+        assert_eq!(emu_reset(), 1);
+        let after_reset = run_and_hash();
+        assert_eq!(after_load, after_reset, "emu_reset must give the same frames and audio as emu_load_rom");
+    }
+}

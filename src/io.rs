@@ -120,6 +120,7 @@ impl Bus {
     /// 0, otherwise the open-bus value. MOSAIC (0x04C) and 0x04E therefore read as open bus,
     /// contrary to gbatek's example, because the mgba-io-read reference expects it.
     fn io_dispatch_read16(&mut self, offset: u32) -> u16 {
+        self.catch_up_components();
         let bits = readable_bits(offset);
         if bits != 0 {
             self.io_owner_read16(offset) & bits
@@ -154,6 +155,7 @@ impl Bus {
 
     /// Route a halfword write (with byte mask) to its owner. Unmapped offsets are ignored.
     fn io_dispatch_write16(&mut self, offset: u32, value: u16, mask: u16) {
+        self.catch_up_components();
         if in_range(offset, PPU_RANGE) {
             self.ppu.io_write16(offset, value, mask)
         } else if in_range(offset, APU_RANGE) {
