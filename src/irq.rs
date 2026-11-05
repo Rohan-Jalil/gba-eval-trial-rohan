@@ -66,7 +66,13 @@ impl Irq {
     /// True when IME is on and some interrupt is both enabled (IE) and requested (IF).
     /// The CPSR I bit is the CPU's business.
     pub fn pending(&self) -> bool {
-        self.master_enable && (self.interrupt_enable & self.interrupt_flags & VALID_IRQ_BITS) != 0
+        self.master_enable && self.wake_condition()
+    }
+
+    /// True when some interrupt is both enabled (IE) and requested (IF), ignoring IME.
+    /// This is what ends Halt (gbatek: GBA System Control, HALTCNT).
+    pub fn wake_condition(&self) -> bool {
+        (self.interrupt_enable & self.interrupt_flags & VALID_IRQ_BITS) != 0
     }
 
     pub fn io_read16(&mut self, offset: u32) -> u16 {
@@ -88,7 +94,8 @@ impl Irq {
             IME => self.master_enable = merge(self.master_enable as u16, value, mask) & 1 != 0,
             _ => {
                 if offset == POSTFLG_HALTCNT && mask & 0xFF00 != 0 {
-                    // ponytail: HALTCNT bit 7 (stop mode) is treated as halt too; add stop when a ROM needs it.
+                    // ponytail: HALTCNT bit 7 (Stop) is treated as Halt: video and sound keep running and any
+                    // enabled IRQ wakes the CPU, not only Keypad/GamePak/Serial. Add real Stop if a ROM needs it.
                     self.halt_requested = true;
                 }
                 self.other_registers.write(offset, value, mask);

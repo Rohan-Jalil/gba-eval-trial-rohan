@@ -17,6 +17,7 @@ mod arm;
 mod thumb;
 
 use crate::bus::Bus;
+use crate::ppu::{CYCLES_PER_LINE, HBLANK_START_CYCLE};
 pub use alu::{FLAG_CARRY, FLAG_NEGATIVE, FLAG_OVERFLOW, FLAG_ZERO};
 
 /// CPSR mode bits 0-4 (gbatek: ARM CPU Register Set).
@@ -108,6 +109,18 @@ pub struct Cpu {
     pipeline_flushed: bool,
 }
 
+/// Longest idle step while halted. Timer overflows can wake the CPU at any cycle and the CPU
+/// cannot see them, so a halted step never skips more than this.
+/// ponytail: fixed chunk; ask the bus for "cycles until next event" if halt timing needs to be exact.
+const MAX_HALT_STEP_CYCLES: u32 = 16;
+
+/// Cycles a halted CPU idles in one step: up to the next PPU HBlank/line boundary, capped.
+fn halted_cycles(bus: &Bus) -> u32 {
+    let line_cycle = bus.ppu.line_cycle;
+    let next_boundary = if line_cycle < HBLANK_START_CYCLE { HBLANK_START_CYCLE } else { CYCLES_PER_LINE };
+    (next_boundary - line_cycle).clamp(1, MAX_HALT_STEP_CYCLES)
+}
+
 impl Cpu {
     /// Power-on state: the Reset exception, i.e. Supervisor mode, ARM state, IRQ and FIQ disabled,
     /// PC at vector 0 (gbatek: ARM CPU Exceptions).
@@ -150,10 +163,22 @@ impl Cpu {
         internal_cycles + bus.take_access_cycles()
     }
 
-    /// Hook for the Phase 2 irq-halt worker: take a pending IRQ (`bus.irq.pending()` with CPSR.I
-    /// clear, via `enter_exception(Exception::Interrupt)`) and idle while HALTCNT halts the CPU.
-    /// Returns `Some(cycles)` when the step was consumed by halting. Not implemented yet.
-    fn service_interrupts_and_halt(&mut self, _bus: &mut Bus) -> Option<u32> {
+    /// Between instructions: idle while halted, then take a pending IRQ (gbatek: GBA Interrupt
+    /// Control, GBA System Control HALTCNT, ARM CPU Exceptions).
+    ///
+    /// Halt ends once (IE AND IF) != 0, regardless of IME and CPSR.I. Returns `Some(cycles)` when
+    /// the step was spent halted, so the rest of the machine advances by that many cycles.
+    /// Taking an IRQ returns `None`: the first handler instruction runs in the same step.
+    fn service_interrupts_and_halt(&mut self, bus: &mut Bus) -> Option<u32> {
+        if bus.irq.halt_requested {
+            if !bus.irq.wake_condition() {
+                return Some(halted_cycles(bus));
+            }
+            bus.irq.halt_requested = false;
+        }
+        if bus.irq.pending() && self.cpsr & CPSR_IRQ_DISABLE == 0 {
+            self.enter_exception(Exception::Interrupt);
+        }
         None
     }
 
