@@ -71,6 +71,15 @@ pub struct WaitStates {
     ewram: u32,
 }
 
+// WAITCNT fields (gbatek: 4000204h WAITCNT).
+const WAITCNT_SRAM_SHIFT: u32 = 0; // bits 0-1, SRAM wait control
+const WAITCNT_WS0_FIRST_SHIFT: u32 = 2; // bits 2-3, wait state 0 first access
+const WAITCNT_WS0_SECOND_BIT: u32 = 4; // wait state 0 second access
+const WAITCNT_WS1_FIRST_SHIFT: u32 = 5; // bits 5-6, wait state 1 first access
+const WAITCNT_WS1_SECOND_BIT: u32 = 7; // wait state 1 second access
+const WAITCNT_WS2_FIRST_SHIFT: u32 = 8; // bits 8-9, wait state 2 first access
+const WAITCNT_WS2_SECOND_BIT: u32 = 10; // wait state 2 second access
+
 /// WAITCNT first-access wait counts for field values 0..3 (gbatek: WAITCNT bits 0-1, 2-3, 5-6, 8-9).
 const FIRST_ACCESS_WAITS: [u32; 4] = [4, 3, 2, 8];
 /// WAITCNT second-access wait counts for field value 0 per wait state (1 when the bit is set).
@@ -80,15 +89,27 @@ impl WaitStates {
     /// Decode WAITCNT and the internal memory control word (gbatek: 4000204h WAITCNT,
     /// 4000800h Internal Memory Control). Each access takes 1 cycle plus its wait states.
     pub fn from_registers(waitcnt: u16, memory_control: u32) -> Self {
+        // Total cycles for a first access whose 2-bit WAITCNT field starts at `shift`.
         let first_access = |shift: u32| 1 + FIRST_ACCESS_WAITS[((waitcnt >> shift) & 3) as usize];
+        // Total cycles for a second access of wait state `state`, selected by WAITCNT bit `bit`.
         let second_access = |state: usize, bit: u32| {
             if waitcnt & (1 << bit) != 0 { 2 } else { 1 + SECOND_ACCESS_WAITS[state] }
         };
+        // ponytail: only the 256K WRAM wait field of 0x4000800 is decoded; bit 0 (WRAM disable) and
+        // bit 5 (256K WRAM enable) are ignored, add them if a ROM toggles them.
         let ewram_wait_field = (memory_control >> 24) & 0xF;
         WaitStates {
-            rom_nonsequential: [first_access(2), first_access(5), first_access(8)],
-            rom_sequential: [second_access(0, 4), second_access(1, 7), second_access(2, 10)],
-            sram: first_access(0),
+            rom_nonsequential: [
+                first_access(WAITCNT_WS0_FIRST_SHIFT),
+                first_access(WAITCNT_WS1_FIRST_SHIFT),
+                first_access(WAITCNT_WS2_FIRST_SHIFT),
+            ],
+            rom_sequential: [
+                second_access(0, WAITCNT_WS0_SECOND_BIT),
+                second_access(1, WAITCNT_WS1_SECOND_BIT),
+                second_access(2, WAITCNT_WS2_SECOND_BIT),
+            ],
+            sram: first_access(WAITCNT_SRAM_SHIFT),
             // 0-14 = 15..1 wait states; 15 locks up on hardware, treated as 1 wait state here.
             ewram: 1 + 15u32.saturating_sub(ewram_wait_field).max(1),
         }
@@ -118,9 +139,15 @@ impl WaitStates {
     }
 }
 
+/// Offset returned for IO addresses with no register; io.rs reads them as open bus.
+pub const UNMAPPED_IO_OFFSET: u32 = 0xFFFF_FFFC;
+
 pub const WAITCNT_OFFSET: u32 = 0x204; // WAITCNT, Game Pak wait-state control
 pub const MEMORY_CONTROL_OFFSET: u32 = 0x800; // undocumented internal memory control, low half
 pub const MEMORY_CONTROL_HIGH_OFFSET: u32 = 0x802; // internal memory control, high half
+
+/// BIOS address whose opcode BIOS read protection returns before any other BIOS code ran.
+const BIOS_STARTUP_PREFETCH_ADDRESS: u32 = 0xDC + 8;
 
 /// Power-on value of the internal memory control register at 0x4000800 (gbatek).
 pub const MEMORY_CONTROL_RESET: u32 = 0x0D00_0020;
@@ -207,7 +234,8 @@ impl Bus {
             next_sequential_address: u32::MAX,
             executing_address: 0,
             executing_thumb: false,
-            last_bios_prefetch: 0,
+            // gbatek: after startup the protected value is the opcode at [00DCh+8].
+            last_bios_prefetch: bios_read(BIOS_STARTUP_PREFETCH_ADDRESS, 4),
         }
     }
 
@@ -284,17 +312,25 @@ impl Bus {
             return self.peek16(address.wrapping_add(8)) as u32
                 | (self.peek16(address.wrapping_add(10)) as u32) << 16;
         }
-        let at = |delta: u32| self.peek16(address.wrapping_add(delta)) as u32;
+        let halfword_after = |delta: u32| self.peek16(address.wrapping_add(delta)) as u32;
         let word_aligned = address & 2 == 0;
         match region_of(address) {
             Region::Bios | Region::Oam => {
-                if word_aligned { at(4) | at(6) << 16 } else { at(2) | at(4) << 16 }
+                if word_aligned {
+                    halfword_after(4) | halfword_after(6) << 16
+                } else {
+                    halfword_after(2) | halfword_after(4) << 16
+                }
             }
             // OldLO/OldHI are usually [$+2] (gbatek); the LDR-overwrite case is not modelled.
             Region::Iwram => {
-                if word_aligned { at(4) | at(2) << 16 } else { at(2) | at(4) << 16 }
+                if word_aligned {
+                    halfword_after(4) | halfword_after(2) << 16
+                } else {
+                    halfword_after(2) | halfword_after(4) << 16
+                }
             }
-            _ => at(4) * 0x0001_0001,
+            _ => halfword_after(4) * 0x0001_0001,
         }
     }
 
@@ -455,7 +491,7 @@ fn io_offset(address: u32) -> u32 {
     } else if (0x800..0x804).contains(&in_64k_block) {
         in_64k_block
     } else {
-        0xFFFF_FFFF // no owner: io.rs treats it as unmapped
+        UNMAPPED_IO_OFFSET | (address & 3) // no owner; low bits kept to pick the open-bus half
     }
 }
 
@@ -600,6 +636,18 @@ mod tests {
         assert_eq!(bus.read16(0x1000_0002), 0xE1A0, "unused memory");
         bus.write16(0x0400_0010, 7); // BG0HOFS, write-only, BG0VOFS too
         assert_eq!(bus.read16(0x0400_0010), 0x0000, "open bus low half of 0xE1A00000");
+    }
+
+    #[test]
+    fn unmapped_io_halves_follow_the_address() {
+        let mut bus = Bus::new(&[]);
+        bus.iwram[0x108..0x10C].copy_from_slice(&0x1111_2222u32.to_le_bytes());
+        bus.note_instruction_fetch(0x0300_0100, false);
+        assert_eq!(bus.read16(0x0400_0400), 0x2222);
+        assert_eq!(bus.read16(0x0400_0402), 0x1111);
+        assert_eq!(bus.read8(0x0400_0403), 0x11);
+        bus.write16(0x0400_004C, 0x00FF); // MOSAIC, write-only, but gbatek says this fragment reads 0
+        assert_eq!(bus.read32(0x0400_004C), 0);
     }
 
     #[test]

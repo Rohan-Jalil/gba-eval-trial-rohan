@@ -104,7 +104,8 @@ mod tests {
         assert_eq!(gba.bus.ppu.vcount as u32, FRAME_END_LINE % 228);
         gba.run_frame();
         // Overshoot of the last instruction carries into the next frame, so frames stay on the
-        // 280,896-cycle grid to within one instruction.
+        // 280,896-cycle grid to within one instruction. 32 covers the slowest single access
+        // pattern this test runs (BIOS/empty-ROM code; a ROM word read costs at most 2 x 9).
         let overshoot = gba.scheduler.total_cycles - 2 * CYCLES_PER_FRAME as u64;
         assert!(overshoot < 32, "overshoot {overshoot}");
         assert_eq!(gba.bus.ppu.vcount as u32, FRAME_END_LINE % 228);
