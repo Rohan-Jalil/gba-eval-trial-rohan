@@ -17,7 +17,7 @@ Each prompt refers to the two procedures below. The executor reads them from thi
    - any extra instructions from the phase prompt.
 2. When the worker reports, launch a **new** `reviewer` agent, never a continued one, so its context is
    fresh. Give it only the branch name. Do not pass on the worker's report or reasoning.
-3. If the verdict is `changes needed`, or `ORIGINALITY: concerns`, send the findings back to the worker
+3. If the verdict is `changes needed`, or `ORIGINALITY: concerns`, or there are `major` readability findings, send the findings back to the worker
    with SendMessage. It fixes them and commits, then a new reviewer runs. Stop after 2 rounds: log the
    open findings in NOTES.md and ask the human.
 4. Merge into `main`: `git merge --no-ff phase<N>/<role> -m "chore(<scope>): merge phase<N>/<role>"`.
@@ -37,7 +37,7 @@ Each prompt refers to the two procedures below. The executor reads them from thi
 5. Tag the milestone: `git tag phase-<N>`.
 6. Add the phase's decisions and changes of approach to NOTES.md (date, what, why) and commit
    (`docs(notes): phase <N> decisions`).
-7. Push: `git push origin main --tags`.
+7. Do not push. The human pushes.
 8. Report to the human:
    - the score row and how it compares with the previous milestone and with the 0.534 baseline;
    - which agents ran;

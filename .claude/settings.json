@@ -7,7 +7,8 @@
       "Bash(*gba-eval/candidates*)",
       "Bash(*gba-eval/third_party*)",
       "WebFetch",
-      "WebSearch"
+      "WebSearch",
+      "Bash(git push*)"
     ]
   }
 }

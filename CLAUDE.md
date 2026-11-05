@@ -13,6 +13,17 @@ Use that absolute path; relative paths break inside worktrees.
   and running ROMs from `$GBA_EVAL/corpus/roms/`.
 - No per-ROM hacks: never branch on a ROM's hash, title, or game code. Fix the hardware behavior.
 
+## Code readability
+- Use clear, descriptive names for functions, variables and types: `destination_register`, `shift_amount`,
+  `fn execute_data_processing`. Never cryptic ones like `x`, `t`, `rd2` or `tmp`. Loop indices
+  (`i`, `line`) are fine when the meaning is obvious.
+- Official gbatek register and field names are allowed (`DISPCNT`, `BG0CNT`, `IE`, `IF`, `CPSR`, `Rd`, `Rn`),
+  each with a short plain-English comment where it is defined, e.g. `const DISPCNT: u32 = 0x000; // display control`.
+- Every non-obvious function gets a one-line doc comment naming the gbatek section it implements, e.g.
+  `/// Barrel shifter for data-processing operand 2 (gbatek: ARM Opcodes: Data Processing (ALU)).`
+- Prefer small readable functions over clever one-liners. Split a long `match` arm or a dense bit-twiddling
+  expression into a named helper.
+
 ## Ownership
 - Only edit the files your task owns (see the ownership tables in PLAN.md).
 - Shared files (`src/lib.rs`, `src/gba.rs`, `src/bus.rs`, `src/io.rs`, `src/irq.rs`, `src/scheduler.rs`,
@@ -20,7 +31,7 @@ Use that absolute path; relative paths break inside worktrees.
   change, say so in your report instead of making it.
 
 ## Git
-- Remote: https://github.com/Rohan-Jalil/gba-eval-trial-rohan
+- Remote: https://github.com/Rohan-Jalil/gba-eval-trial-rohan. Never push; the human pushes.
 - Author and committer: Rohan Jalil <rohan.jalil@gmail.com>. This is set in this repo's git config;
   do not override it.
 - Use Conventional Commits: `type(scope): summary`, for example `feat(cpu): add ARM data-processing ops`,
