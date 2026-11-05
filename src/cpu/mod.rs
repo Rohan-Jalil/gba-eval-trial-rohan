@@ -170,20 +170,22 @@ impl Cpu {
         internal_cycles + bus.take_access_cycles()
     }
 
-    /// Charge the extra fetch of a pipeline refill after any write to R15 or exception entry
-    /// (gbatek: ARM CPU Instruction Cycle Times, "+1S+1N if R15 loaded", B/BL/SWI/trap 2S+1N).
+    /// Charge the two refill fetches after any write to R15 or exception entry (gbatek: ARM CPU
+    /// Instruction Cycle Times, "+1S+1N if R15 loaded", B/BL/SWI/trap 2S+1N).
     ///
-    /// Each step charges the fetch of its own opcode, so a sequential run costs 1S per opcode.
-    /// A refill fetches the target (1N) and the opcode after it (1S) before the target executes.
-    /// Here the target is read once as 1N, and the target's own fetch in the next step is
-    /// forced to 1S; the step after that continues sequentially as usual.
+    /// Each step charges one opcode fetch, so a sequential run costs 1S per opcode, matching the
+    /// hardware's one prefetch per opcode. A flush throws away the two prefetched opcodes, and the
+    /// pipeline refills with the target (1N) and the opcode after it (1S). Every later step is one
+    /// sequential prefetch, so the target's own fetch in the next step is forced to 1S.
     fn charge_pipeline_refill(&mut self, bus: &mut Bus) {
         let target = self.registers[PROGRAM_COUNTER];
         bus.force_next_access_sequential(false);
         if self.in_thumb_state() {
             bus.read16(target);
+            bus.read16(target.wrapping_add(2));
         } else {
             bus.read32(target);
+            bus.read32(target.wrapping_add(4));
         }
         bus.force_next_access_sequential(true);
     }
@@ -668,6 +670,21 @@ mod tests {
         assert_eq!(cpu.mode(), MODE_IRQ);
         assert_eq!(cpu.registers[LINK_REGISTER], 0x0300_0004);
         assert_eq!(cpu.registers[PROGRAM_COUNTER], 0x18, "next fetch is the BIOS IRQ vector");
+    }
+
+    #[test]
+    fn branch_in_rom_charges_pipeline_refill() {
+        // B . (0xEAFFFFFE) at 0x08000100, default WAITCNT: 16-bit ROM access N=5, S=3 cycles.
+        let mut rom = vec![0; 0x200];
+        rom[0x100..0x104].copy_from_slice(&0xEAFF_FFFEu32.to_le_bytes());
+        let mut bus = Bus::new(&rom);
+        let mut cpu = cpu_in_mode(MODE_SYSTEM);
+        cpu.registers[PROGRAM_COUNTER] = 0x0800_0100;
+        bus.read32(0x0800_00FC); // make the branch's own fetch sequential
+        bus.take_access_cycles();
+        // 1S own fetch (3+3) + refill: 1N target (5+3) + 1S next opcode (3+3). 2S+1N in total.
+        assert_eq!(cpu.step(&mut bus), 6 + 8 + 6);
+        assert_eq!(cpu.step(&mut bus), 6 + 8 + 6, "the target's own fetch stays sequential");
     }
 
     #[test]
