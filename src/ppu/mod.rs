@@ -2,8 +2,9 @@
 //! (gbatek: GBA LCD Video Controller, LCD Dimensions and Timings, LCD I/O Display Control).
 //!
 //! The PPU owns palette RAM, VRAM and OAM; the bus reads and writes them directly.
-//! Each visible line is rendered at HBlank start: every enabled BG renders into its own
-//! `[LayerPixel; 240]`, then `compose_line` merges them by priority over the backdrop.
+//! Each visible line is rendered at HBlank start into a `LineLayers`: every enabled BG renders
+//! into its own `[LayerPixel; 240]`, sprites into one more plus the OBJ-window mask, and
+//! `compose_line` (the only place layers are merged) produces the framebuffer line.
 
 mod bg_affine;
 mod bg_text;
@@ -36,6 +37,8 @@ const IO_START: u32 = 0x000;
 const DISPCNT: u32 = 0x000; // display control: BG mode, frame select, forced blank, layer enables
 const BG0CNT: u32 = 0x008; // BG0 control; BG1CNT-BG3CNT follow every 2 bytes
 const BG0HOFS: u32 = 0x010; // BG0 X scroll; BG0VOFS follows, then BG1HOFS... every 4 bytes
+const BG2X: u32 = 0x028; // BG2 reference point X (28-bit), BG2Y at 0x02C; BG3X/BG3Y at 0x038/0x03C
+const BG2PA: u32 = 0x020; // BG2 affine parameters PA, PB, PC, PD; BG3PA at 0x030
 const DISPSTAT: u32 = 0x004; // general LCD status: VBlank/HBlank/VCount flags, IRQ enables, LYC
 const VCOUNT: u32 = 0x006; // current scanline (read only)
 
@@ -52,6 +55,7 @@ const DISPCNT_BG_MODE_MASK: u16 = 0x7;
 const DISPCNT_FRAME_SELECT: u16 = 1 << 4;
 const DISPCNT_FORCED_BLANK: u16 = 1 << 7;
 const DISPCNT_BG0_ENABLE: u16 = 1 << 8;
+const DISPCNT_OBJ_ENABLE: u16 = 1 << 12;
 
 /// Opaque black in the ABI framebuffer format 0xAABBGGRR.
 const BLACK: u32 = 0xFF00_0000;
@@ -106,6 +110,33 @@ pub struct LayerPixel {
     pub is_semi_transparent_sprite: bool,
 }
 
+/// Everything the layer renderers produce for one scanline; `compose_line` merges it
+/// (Phase 3 contract: renderers fill their own entry, only the compositor reads them all).
+pub struct LineLayers {
+    /// BG0-BG3, each 240 pixels.
+    pub backgrounds: [[LayerPixel; SCREEN_WIDTH]; 4],
+    /// Whether each BG is enabled and exists in the current BG mode.
+    pub background_enabled: [bool; 4],
+    /// All sprites merged into one layer (obj.rs resolves sprite-vs-sprite priority).
+    pub sprites: [LayerPixel; SCREEN_WIDTH],
+    /// DISPCNT OBJ enable.
+    pub sprites_enabled: bool,
+    /// Pixels covered by an opaque OBJ-window sprite (gbatek: LCD I/O Window Feature, OBJ Window).
+    pub obj_window: [bool; SCREEN_WIDTH],
+}
+
+impl LineLayers {
+    fn new() -> Self {
+        LineLayers {
+            backgrounds: [[TRANSPARENT_PIXEL; SCREEN_WIDTH]; 4],
+            background_enabled: [false; 4],
+            sprites: [TRANSPARENT_PIXEL; SCREEN_WIDTH],
+            sprites_enabled: false,
+            obj_window: [false; SCREEN_WIDTH],
+        }
+    }
+}
+
 /// What happened during a `Ppu::step`, for gba.rs to forward to DMA.
 #[derive(Clone, Copy, Default, Debug)]
 pub struct PpuEvents {
@@ -128,6 +159,10 @@ pub struct Ppu {
     dispstat: u16,
     /// DISPCNT, BGxCNT, scroll, affine, window, blend registers: stored, read back as written.
     registers: PlainRegisters<0x30>,
+    /// Internal BG2/BG3 reference points (X, Y), signed 20.8 fixed point (BGxX/BGxY are 28-bit).
+    /// Reloaded from BGxX/BGxY on write and at VBlank, advanced by PB/PD after every visible line
+    /// (gbatek: LCD I/O BG Rotation/Scaling, "Internal Reference Point Registers").
+    affine_reference: [(i32, i32); 2],
 }
 
 impl Ppu {
@@ -142,6 +177,7 @@ impl Ppu {
             // VCOUNT 0 equals the power-on LYC 0, so the match flag starts set.
             dispstat: DISPSTAT_VCOUNT_FLAG,
             registers: PlainRegisters::new(IO_START),
+            affine_reference: [(0, 0); 2],
         }
     }
 
@@ -170,6 +206,7 @@ impl Ppu {
     fn enter_hblank(&mut self, irq: &mut Irq, events: &mut PpuEvents) {
         if self.vcount < VBLANK_START_LINE {
             self.render_line(self.vcount as usize);
+            self.advance_affine_reference_points();
             events.hblank_started = true;
         }
         self.dispstat |= DISPSTAT_HBLANK_FLAG;
@@ -184,6 +221,7 @@ impl Ppu {
         self.vcount = (self.vcount + 1) % LINES_PER_FRAME;
 
         if self.vcount == VBLANK_START_LINE {
+            self.reload_affine_reference_points();
             self.dispstat |= DISPSTAT_VBLANK_FLAG;
             events.vblank_started = true;
             if self.dispstat & DISPSTAT_VBLANK_IRQ_ENABLE != 0 {
@@ -213,8 +251,57 @@ impl Ppu {
         matches
     }
 
+    /// DISPCNT (gbatek: LCD I/O Display Control).
     pub(crate) fn dispcnt(&self) -> u16 {
         self.registers.read(DISPCNT)
+    }
+
+    /// Raw value of any PPU register stored at `offset` (0x000-0x05F), e.g. WININ, BLDCNT,
+    /// MOSAIC. Unlike `io_read16`, write-only registers return what was written.
+    #[allow(dead_code)] // used by the Phase 3 effects/sprites workers
+    pub(crate) fn register(&self, offset: u32) -> u16 {
+        self.registers.read(offset)
+    }
+
+    /// Affine parameters PA, PB, PC, PD of BG2 (`affine_index` 0) or BG3 (1), signed 8.8 fixed
+    /// point (gbatek: LCD I/O BG Rotation/Scaling).
+    pub(crate) fn affine_parameters(&self, affine_index: usize) -> [i16; 4] {
+        let base = BG2PA + 0x10 * affine_index as u32;
+        [0, 1, 2, 3].map(|parameter| self.registers.read(base + 2 * parameter) as i16)
+    }
+
+    /// Current internal reference point (X, Y) of BG2 (`affine_index` 0) or BG3 (1) for the line
+    /// being drawn, signed 20.8 fixed point.
+    #[allow(dead_code)] // used by the Phase 3 affine worker
+    pub(crate) fn affine_reference_point(&self, affine_index: usize) -> (i32, i32) {
+        self.affine_reference[affine_index]
+    }
+
+    /// BGxX/BGxY as written: 28-bit two's complement, sign-extended to i32.
+    fn written_reference_point(&self, affine_index: usize) -> (i32, i32) {
+        let base = BG2X + 0x10 * affine_index as u32;
+        let read28 = |offset: u32| {
+            let raw = self.registers.read(offset) as u32 | (self.registers.read(offset + 2) as u32) << 16;
+            ((raw << 4) as i32) >> 4
+        };
+        (read28(base), read28(base + 4))
+    }
+
+    /// Copy BGxX/BGxY into the internal reference points (at VBlank).
+    fn reload_affine_reference_points(&mut self) {
+        for affine_index in 0..2 {
+            self.affine_reference[affine_index] = self.written_reference_point(affine_index);
+        }
+    }
+
+    /// After each visible line the internal points move by (PB, PD) (gbatek: dmx, dmy).
+    fn advance_affine_reference_points(&mut self) {
+        for affine_index in 0..2 {
+            let [_, parameter_b, _, parameter_d] = self.affine_parameters(affine_index);
+            let (x, y) = &mut self.affine_reference[affine_index];
+            *x = x.wrapping_add(parameter_b as i32);
+            *y = y.wrapping_add(parameter_d as i32);
+        }
     }
 
     /// BGxCNT for BG `background_index` (gbatek: LCD I/O BG Control).
@@ -259,36 +346,43 @@ impl Ppu {
             return;
         }
         let bg_mode = dispcnt & DISPCNT_BG_MODE_MASK;
-        let mut layers = [[TRANSPARENT_PIXEL; SCREEN_WIDTH]; 4];
-        let mut enabled_layers = [false; 4];
-        for (background_index, layer) in layers.iter_mut().enumerate() {
+        let mut layers = LineLayers::new();
+        for background_index in 0..4 {
             if dispcnt & (DISPCNT_BG0_ENABLE << background_index) == 0 {
                 continue;
             }
-            enabled_layers[background_index] = true;
+            let layer = &mut layers.backgrounds[background_index];
+            layers.background_enabled[background_index] = true;
             match background_kind(bg_mode, background_index) {
                 BackgroundKind::Text => bg_text::render_text_background_line(self, background_index, line, layer),
                 BackgroundKind::Affine => {
                     bg_affine::render_affine_background_line(self, background_index, line, layer)
                 }
                 BackgroundKind::Bitmap => bitmap::render_bitmap_line(self, line, layer),
-                BackgroundKind::Unused => enabled_layers[background_index] = false,
+                BackgroundKind::Unused => layers.background_enabled[background_index] = false,
             }
         }
-        self.compose_line(line, &layers, &enabled_layers);
+        // The OBJ window works even when OBJ display is off, so sprites always render.
+        layers.sprites_enabled = dispcnt & DISPCNT_OBJ_ENABLE != 0;
+        obj::render_sprite_line(self, line, &mut layers.sprites, &mut layers.obj_window);
+        self.compose_line(line, &layers);
     }
 
-    /// Merge BG layers by priority over the backdrop (gbatek: LCD I/O BG Control, "BG0 is having
-    /// the highest" priority on ties; LCD Color Palettes, Backdrop Color).
-    // ponytail: BG layers only; Phase 3 adds sprites, windows and blending here.
-    fn compose_line(&mut self, line: usize, layers: &[[LayerPixel; SCREEN_WIDTH]; 4], enabled: &[bool; 4]) {
+    /// Merge the line's layers over the backdrop (gbatek: LCD I/O BG Control, "BG0 is having
+    /// the highest" priority on ties; LCD OBJ - OAM Attributes, a sprite is in front of a BG
+    /// of the same priority; LCD Color Palettes, Backdrop Color).
+    // ponytail: priority only; the Phase 3 effects worker adds windows and blending here.
+    fn compose_line(&mut self, line: usize, layers: &LineLayers) {
         let backdrop = self.palette_color(0);
         let start = line * SCREEN_WIDTH;
         for x in 0..SCREEN_WIDTH {
             let mut best: Option<LayerPixel> = None;
-            for (background_index, layer) in layers.iter().enumerate() {
+            if layers.sprites_enabled && !layers.sprites[x].is_transparent {
+                best = Some(layers.sprites[x]);
+            }
+            for (background_index, layer) in layers.backgrounds.iter().enumerate() {
                 let pixel = layer[x];
-                if !enabled[background_index] || pixel.is_transparent {
+                if !layers.background_enabled[background_index] || pixel.is_transparent {
                     continue;
                 }
                 if best.is_none_or(|current| pixel.priority < current.priority) {
@@ -317,6 +411,12 @@ impl Ppu {
                 self.refresh_vcount_flag();
             }
             VCOUNT => {}
+            // Writing a reference point register also reloads the internal point at once.
+            0x028..=0x02E | 0x038..=0x03E => {
+                self.registers.write(offset, value, mask);
+                let affine_index = ((offset - BG2X) / 0x10) as usize;
+                self.affine_reference[affine_index] = self.written_reference_point(affine_index);
+            }
             _ => self.registers.write(offset, value, mask),
         }
     }
@@ -326,6 +426,17 @@ impl Ppu {
 mod tests {
     use super::*;
     use crate::bus::Bus;
+
+    #[test]
+    fn affine_reference_point_reloads_on_write_and_advances_per_line() {
+        let mut bus = Bus::new(&[]);
+        bus.write32(0x0400_0028, 0x0FFF_FF00); // BG2X = -1.0 (28-bit two's complement)
+        bus.write16(0x0400_0022, 0x0080); // BG2PB = 0.5
+        assert_eq!(bus.ppu.affine_reference_point(0), (-256, 0));
+        let mut irq = crate::irq::Irq::new();
+        bus.ppu.step(CYCLES_PER_LINE, &mut irq); // line 0 drawn, point advanced
+        assert_eq!(bus.ppu.affine_reference_point(0), (-128, 0));
+    }
 
     const RED: u16 = 0x001F;
     const GREEN: u16 = 0x03E0;
