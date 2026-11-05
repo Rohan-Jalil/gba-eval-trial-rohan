@@ -40,6 +40,8 @@ fn low_register(opcode: u32, shift: u32) -> usize {
     ((opcode >> shift) & 7) as usize
 }
 
+/// Raise the Undefined Instruction exception for encodings the ARMv4T lacks
+/// (gbatek: ARM CPU Exceptions).
 fn undefined(cpu: &mut Cpu) -> u32 {
     cpu.enter_exception(Exception::UndefinedInstruction);
     0
@@ -100,36 +102,20 @@ fn alu_operation(cpu: &mut Cpu, opcode: u32) -> u32 {
     let first = cpu.registers[destination];
     let second = cpu.registers[low_register(opcode, 3)];
     let carry_in = cpu.carry();
-    let shift = |cpu: &mut Cpu, shift_type| {
-        let (result, carry) = alu::shift_by_register(shift_type, first, second, carry_in);
-        cpu.registers[destination] = result;
-        cpu.set_logical_flags(result, carry);
-        1 // shift by register costs 1I
-    };
-    let write_logical = |cpu: &mut Cpu, result| {
-        cpu.registers[destination] = result;
-        cpu.set_negative_and_zero(result);
-        0
-    };
-    let write_arithmetic = |cpu: &mut Cpu, result: alu::ArithmeticResult| {
-        cpu.registers[destination] = result.value;
-        cpu.set_arithmetic_flags(result);
-        0
-    };
     match (opcode >> 6) & 0xF {
-        0x0 => write_logical(cpu, first & second),
-        0x1 => write_logical(cpu, first ^ second),
-        0x2 => shift(cpu, ShiftType::LogicalLeft),
-        0x3 => shift(cpu, ShiftType::LogicalRight),
-        0x4 => shift(cpu, ShiftType::ArithmeticRight),
-        0x5 => write_arithmetic(cpu, alu::add_with_carry(first, second, carry_in)),
-        0x6 => write_arithmetic(cpu, alu::subtract_with_carry(first, second, carry_in)),
-        0x7 => shift(cpu, ShiftType::RotateRight),
+        0x0 => write_logical(cpu, destination, first & second),
+        0x1 => write_logical(cpu, destination, first ^ second),
+        0x2 => shift_by_register(cpu, destination, ShiftType::LogicalLeft, second),
+        0x3 => shift_by_register(cpu, destination, ShiftType::LogicalRight, second),
+        0x4 => shift_by_register(cpu, destination, ShiftType::ArithmeticRight, second),
+        0x5 => write_arithmetic(cpu, destination, alu::add_with_carry(first, second, carry_in)),
+        0x6 => write_arithmetic(cpu, destination, alu::subtract_with_carry(first, second, carry_in)),
+        0x7 => shift_by_register(cpu, destination, ShiftType::RotateRight, second),
         0x8 => {
             cpu.set_negative_and_zero(first & second);
             0
         }
-        0x9 => write_arithmetic(cpu, alu::subtract(0, second)),
+        0x9 => write_arithmetic(cpu, destination, alu::subtract(0, second)),
         0xA => {
             cpu.set_arithmetic_flags(alu::subtract(first, second));
             0
@@ -138,12 +124,35 @@ fn alu_operation(cpu: &mut Cpu, opcode: u32) -> u32 {
             cpu.set_arithmetic_flags(alu::add(first, second));
             0
         }
-        0xC => write_logical(cpu, first | second),
+        0xC => write_logical(cpu, destination, first | second),
         // ponytail: ARMv4 "destroys" C on MUL; we leave it unchanged (gbatek gives no value).
-        0xD => write_logical(cpu, first.wrapping_mul(second)) + multiply_cycles(first),
-        0xE => write_logical(cpu, first & !second),
-        _ => write_logical(cpu, !second),
+        0xD => write_logical(cpu, destination, first.wrapping_mul(second)) + multiply_cycles(first),
+        0xE => write_logical(cpu, destination, first & !second),
+        _ => write_logical(cpu, destination, !second),
     }
+}
+
+/// THUMB.4 logical result: Rd = result, N and Z set, C and V unchanged. No internal cycles.
+fn write_logical(cpu: &mut Cpu, destination: usize, result: u32) -> u32 {
+    cpu.registers[destination] = result;
+    cpu.set_negative_and_zero(result);
+    0
+}
+
+/// THUMB.4 arithmetic result: Rd = result, N, Z, C and V set. No internal cycles.
+fn write_arithmetic(cpu: &mut Cpu, destination: usize, result: alu::ArithmeticResult) -> u32 {
+    cpu.registers[destination] = result.value;
+    cpu.set_arithmetic_flags(result);
+    0
+}
+
+/// THUMB.4 LSL/LSR/ASR/ROR Rd,Rs: shift Rd by the low byte of Rs, N/Z/C set. Costs 1I.
+fn shift_by_register(cpu: &mut Cpu, destination: usize, shift_type: ShiftType, amount_register: u32) -> u32 {
+    let (result, carry) =
+        alu::shift_by_register(shift_type, cpu.registers[destination], amount_register, cpu.carry());
+    cpu.registers[destination] = result;
+    cpu.set_logical_flags(result, carry);
+    1
 }
 
 /// Internal cycles m of MUL from the multiplier's top bytes being all zero or all one
