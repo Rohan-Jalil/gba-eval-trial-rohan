@@ -206,6 +206,9 @@ pub struct Bus {
     memory_control: u32,
     /// Address that would continue the previous access sequentially (for S vs N cycles).
     next_sequential_address: u32,
+    /// One-shot override for the next access's sequential/non-sequential timing, for callers
+    /// that know better than address tracking (DMA alternates reads and writes).
+    forced_sequential: Option<bool>,
     /// Address of the instruction the CPU is executing and its state, set by the CPU before each
     /// fetch. Open-bus reads and BIOS read protection are derived from it.
     executing_address: u32,
@@ -232,6 +235,7 @@ impl Bus {
             waitcnt: 0,
             memory_control: MEMORY_CONTROL_RESET,
             next_sequential_address: u32::MAX,
+            forced_sequential: None,
             executing_address: 0,
             executing_thumb: false,
             // gbatek: after startup the protected value is the opcode at [00DCh+8].
@@ -248,11 +252,21 @@ impl Bus {
     /// directly after the previous one, except at a Game Pak 128K block boundary.
     fn charge(&mut self, address: u32, width: Width) -> Region {
         let region = region_of(address);
-        let sequential = address == self.next_sequential_address
-            && (address & ROM_SEQUENTIAL_BLOCK_MASK) != 0;
+        let continues_previous = match self.forced_sequential.take() {
+            Some(sequential) => sequential,
+            None => address == self.next_sequential_address,
+        };
+        let sequential = continues_previous && (address & ROM_SEQUENTIAL_BLOCK_MASK) != 0;
         self.access_cycles += self.wait_states.access_cost(region, address, width, sequential);
         self.next_sequential_address = address.wrapping_add(width_in_bytes(width));
         region
+    }
+
+    /// Make the next access sequential (S) or non-sequential (N) regardless of its address.
+    /// DMA uses this: its reads and writes alternate, but each side is sequential after the
+    /// first unit (gbatek: DMA Transfer Time, 2N+2(n-1)S+xI).
+    pub fn force_next_access_sequential(&mut self, sequential: bool) {
+        self.forced_sequential = Some(sequential);
     }
 
     /// Track writes to WAITCNT (0x204) and the internal memory control register (0x800/0x802)
@@ -583,6 +597,19 @@ mod tests {
         assert_eq!(bus.take_access_cycles(), 4);
         bus.read8(0x0E00_0000); // SRAM field 3 = 8 waits
         assert_eq!(bus.take_access_cycles(), 9);
+    }
+
+    #[test]
+    fn forced_sequential_overrides_address_tracking() {
+        let mut bus = Bus::new(&[0; 0x1000]);
+        bus.read16(0x0800_0100);
+        bus.write16(0x0300_0000, 0);
+        bus.take_access_cycles();
+        bus.force_next_access_sequential(true);
+        bus.read16(0x0800_0102);
+        assert_eq!(bus.take_access_cycles(), 3, "S cycle despite the IWRAM write in between");
+        bus.read16(0x0800_0104);
+        assert_eq!(bus.take_access_cycles(), 3, "tracking resumes after the override");
     }
 
     #[test]
