@@ -87,7 +87,7 @@ fn readable_bits(offset: u32) -> u16 {
         0x062 | 0x068 => 0xFFC0,  // SOUND1CNT_H, SOUND2CNT_L: length is write-only
         0x064 | 0x06C | 0x074 => 0x4000, // SOUNDxCNT_X/H: only the length flag reads back
         0x070 => 0x00E0,          // SOUND3CNT_L
-        0x072 => 0xE000,          // SOUND3CNT_H: volume only
+        0x072 => 0xE000,          // SOUND3CNT_H: volume and force-75% bits; length is write-only
         0x078 => 0xFF00,          // SOUND4CNT_L: envelope only
         0x07C => 0x40FF,          // SOUND4CNT_H
         0x080 => 0xFF77,          // SOUNDCNT_L
@@ -106,7 +106,7 @@ fn readable_bits(offset: u32) -> u16 {
         0x140 => 0xFFFF,          // JOYCNT
         0x150..=0x158 => 0xFFFF,  // JOY_RECV, JOY_TRANS, JOYSTAT
         0x200 | 0x202 => 0x3FFF,  // IE, IF
-        0x204 => 0x7FFF,          // WAITCNT (bit 15 reads 0: GBA cartridge)
+        0x204 => 0x5FFF,          // WAITCNT (bit 13 unused; bit 15 reads 0: GBA cartridge)
         0x208 => 0x0001,          // IME
         0x300 => 0x0001,          // POSTFLG bit 0; HALTCNT (high byte) is write-only
         0x800 | 0x802 => 0xFFFF,  // internal memory control
@@ -117,7 +117,8 @@ fn readable_bits(offset: u32) -> u16 {
 impl Bus {
     /// Halfword read with gbatek's rules for unreadable ports ("Reading from Unused or
     /// Write-Only I/O Ports"): if the other half of the 32-bit fragment is readable the result is
-    /// 0, otherwise the open-bus value.
+    /// 0, otherwise the open-bus value. MOSAIC (0x04C) and 0x04E therefore read as open bus,
+    /// contrary to gbatek's example, because the mgba-io-read reference expects it.
     fn io_dispatch_read16(&mut self, offset: u32) -> u16 {
         let bits = readable_bits(offset);
         if bits != 0 {

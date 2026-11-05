@@ -19,6 +19,9 @@ const BASE_SAMPLE_RATE_HZ: u32 = 32768;
 /// Stereo pairs kept when the host never drains; older output is dropped beyond this.
 const MAX_BUFFERED_PAIRS: usize = 1 << 16;
 
+const SOUNDCNT_X_OFFSET: u32 = 0x084; // SOUNDCNT_X, sound on/off and channel status
+const SOUNDCNT_X_MASTER_ENABLE: u16 = 0x0080; // bit 7, PSG/FIFO master enable
+
 pub struct Apu {
     registers: PlainRegisters<0x28>,
     psg: psg::Psg,
@@ -81,10 +84,7 @@ impl Apu {
     pub fn io_write16(&mut self, offset: u32, value: u16, mask: u16) {
         // SOUNDCNT_X: only bit 7 (master enable) is writable; bits 0-3 are channel status flags
         // the APU sets itself (gbatek: GBA Sound Control Registers).
-        let value = if offset == SOUNDCNT_X_OFFSET { value & SOUNDCNT_X_MASTER_ENABLE } else { value };
+        let mask = if offset == SOUNDCNT_X_OFFSET { mask & SOUNDCNT_X_MASTER_ENABLE } else { mask };
         self.registers.write(offset, value, mask)
     }
 }
-
-const SOUNDCNT_X_OFFSET: u32 = 0x084; // SOUNDCNT_X, sound on/off and channel status
-const SOUNDCNT_X_MASTER_ENABLE: u16 = 0x0080; // bit 7, PSG/FIFO master enable

@@ -301,7 +301,7 @@ impl Bus {
         let offset = (address & 0x1FFFF) as usize;
         if offset < 0x18000 {
             Some(offset)
-        } else if offset < 0x1C000 && self.vram_bg_area_size() > 0x10000 {
+        } else if offset < 0x1C000 && self.in_bitmap_mode() {
             None
         } else {
             Some(offset - 0x8000)
@@ -311,8 +311,12 @@ impl Bus {
     /// Size of the BG part of VRAM, where byte writes are allowed: 64K in tiled modes, 80K in
     /// bitmap modes 3-5 (gbatek: Writing 8bit Data to Video Memory).
     fn vram_bg_area_size(&self) -> usize {
-        let bg_mode = self.ppu.dispcnt() & 7; // DISPCNT bits 0-2
-        if bg_mode >= 3 { 0x14000 } else { 0x10000 }
+        if self.in_bitmap_mode() { 0x14000 } else { 0x10000 }
+    }
+
+    /// BG modes 3-5 (DISPCNT bits 0-2) use VRAM as bitmap frame buffers.
+    fn in_bitmap_mode(&self) -> bool {
+        self.ppu.dispcnt() & 7 >= 3
     }
 
     /// Called by the CPU before it fetches the instruction at `address`. Keeps the state needed
@@ -697,6 +701,29 @@ mod tests {
         assert_eq!(bus.read16(0x0400_0400), 0x2222);
         assert_eq!(bus.read16(0x0400_0402), 0x1111);
         assert_eq!(bus.read8(0x0400_0403), 0x11);
+    }
+
+    #[test]
+    fn io_reads_drop_unused_bits_and_mosaic_reads_open_bus() {
+        let mut bus = Bus::new(&[]);
+        bus.iwram[0x108..0x10C].copy_from_slice(&0xA5A5_5A5Au32.to_le_bytes());
+        bus.note_instruction_fetch(0x0300_0100, false);
+        bus.write16(0x0400_0008, 0xFFFF); // BG0CNT: bit 13 does not exist
+        assert_eq!(bus.read16(0x0400_0008), 0xDFFF);
+        bus.write16(0x0400_0084, 0x008F); // SOUNDCNT_X: status bits 0-3 are not writable
+        assert_eq!(bus.read16(0x0400_0084), 0x0080);
+        assert_eq!(bus.read32(0x0400_004C), 0xA5A5_5A5A, "MOSAIC fragment reads open bus");
+    }
+
+    #[test]
+    fn bitmap_modes_leave_a_vram_hole_at_0x18000() {
+        let mut bus = Bus::new(&[]);
+        bus.write16(0x0601_8000, 0x1234); // mode 0: mirrors 0x10000
+        assert_eq!(bus.read16(0x0601_0000), 0x1234);
+        bus.write16(0x0400_0000, 3); // DISPCNT: bitmap mode 3
+        bus.write16(0x0601_8000, 0x5678);
+        assert_eq!(bus.read16(0x0601_8000), 0);
+        assert_eq!(bus.read16(0x0601_0000), 0x1234, "write to the hole was dropped");
     }
 
     #[test]
