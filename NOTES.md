@@ -114,5 +114,5 @@ date, what, why.
 | 2026-11-05 | 5 | compat-timing (goodboy-gameplay) | claude-opus-5-5 | phase5/goodboy-gameplay | No commits: root cause in dma.rs (outside its files), handed to the integrator with evidence. goodboy video 0.081 to 1.0 |
 | 2026-11-05 | 5 | compat-timing (spout-gameplay) | claude-opus-5-5 | phase5/spout-gameplay | Not merged (net regression); hard-stopped after it kept iterating; findings logged |
 | 2026-11-05 | 5 | compat-timing (heartwrench-gameplay) | claude-opus-5-5 | phase5/heartwrench-gameplay | SRAM_V detection merged after 1 review round (merge, clean), neutral; prefetch kept on phase5/heartwrench-prefetch |
-| 2026-11-06 | 5 | reviewer (x4, fresh each time) | claude-opus-5-5 | phase5/* + main | integrator DMA fix 2 rounds, heartwrench SRAM 1 round; no grading |
+| 2026-11-06 | 5 | reviewer (x3, fresh each time) | claude-opus-5-5 | phase5/* + main | integrator DMA fix 2 rounds, heartwrench SRAM 1 round; no grading |
 | 2026-11-06 | 5 | executor (integrator) | claude-opus-5-5 | main | Triage with video, DISPCNT and DMA fixes, hard stops on the timing workers, grading-budget rule, phase-5 milestone 0.8476 |
