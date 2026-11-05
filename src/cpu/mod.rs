@@ -16,7 +16,7 @@ mod alu;
 mod arm;
 mod thumb;
 
-use crate::bus::Bus;
+use crate::bus::{Bus, BIOS_SIZE};
 use crate::ppu::{CYCLES_PER_LINE, HBLANK_START_CYCLE};
 pub use alu::{FLAG_CARRY, FLAG_NEGATIVE, FLAG_OVERFLOW, FLAG_ZERO};
 
@@ -179,6 +179,7 @@ impl Cpu {
         if bus.irq.pending() && self.cpsr & CPSR_IRQ_DISABLE == 0 {
             self.enter_exception(Exception::Interrupt);
         }
+        bus.irq.executing_bios = self.registers[PROGRAM_COUNTER] < BIOS_SIZE as u32;
         None
     }
 
@@ -425,6 +426,7 @@ impl Cpu {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::irq::IrqSource;
 
     fn cpu_in_mode(mode: u32) -> Cpu {
         let mut cpu = Cpu::new();
@@ -614,6 +616,33 @@ mod tests {
         assert_eq!(cpu.registers[LINK_REGISTER], 0x0800_0204, "SUBS PC,R14,#4 returns to 0x08000200");
         assert_eq!(cpu.cpsr & CPSR_FIQ_DISABLE, 0, "IRQ leaves F unchanged");
         assert_eq!(cpu.registers[PROGRAM_COUNTER], 0x18);
+    }
+
+    #[test]
+    fn halt_idles_until_ie_and_if_then_irq_needs_ime_and_cpsr_i() {
+        let mut bus = Bus::new(&[]);
+        let mut cpu = cpu_in_mode(MODE_SYSTEM);
+        cpu.registers[PROGRAM_COUNTER] = 0x0300_0000;
+        bus.irq.halt_requested = true;
+        bus.irq.interrupt_enable = 1;
+        let idle = cpu.service_interrupts_and_halt(&mut bus);
+        assert!(matches!(idle, Some(1..=MAX_HALT_STEP_CYCLES)));
+
+        bus.irq.request(IrqSource::VBlank);
+        assert_eq!(cpu.service_interrupts_and_halt(&mut bus), None, "IE AND IF wakes even with IME=0");
+        assert!(!bus.irq.halt_requested);
+        assert_eq!(cpu.mode(), MODE_SYSTEM, "no IRQ while IME=0");
+
+        bus.irq.master_enable = true;
+        cpu.cpsr |= CPSR_IRQ_DISABLE;
+        cpu.service_interrupts_and_halt(&mut bus);
+        assert_eq!(cpu.mode(), MODE_SYSTEM, "no IRQ while CPSR.I=1");
+
+        cpu.cpsr &= !CPSR_IRQ_DISABLE;
+        cpu.service_interrupts_and_halt(&mut bus);
+        assert_eq!(cpu.mode(), MODE_IRQ);
+        assert_eq!(cpu.registers[LINK_REGISTER], 0x0300_0004);
+        assert!(bus.irq.executing_bios, "the IRQ vector is BIOS code");
     }
 
     #[test]
