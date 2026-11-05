@@ -7,7 +7,7 @@
 #   scripts/grade-full.sh phase-1 "CPU gate passed"
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-GBA_EVAL="${GBA_EVAL:-/var/www/html/test-projects/gba-eval}"
+GBA_EVAL="${GBA_EVAL:-$("$(dirname "$0")/gba-eval-path.sh")}"
 [ $# -ge 1 ] || { sed -n '2,8p' "$0"; exit 2; }
 PHASE="$1"; NOTE="${2:-}"
 cd "$ROOT"

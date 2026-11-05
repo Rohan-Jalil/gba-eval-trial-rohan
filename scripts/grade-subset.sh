@@ -12,7 +12,7 @@
 # per-testcase entries instead.
 set -euo pipefail
 
-GBA_EVAL="${GBA_EVAL:-/var/www/html/test-projects/gba-eval}"
+GBA_EVAL="${GBA_EVAL:-$("$(dirname "$0")/gba-eval-path.sh")}"
 [ $# -ge 3 ] || { sed -n '2,12p' "$0"; exit 2; }
 WASM="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"; NAME="$2"; shift 2
 [ -f "$WASM" ] || { echo "error: $WASM not found" >&2; exit 1; }
