@@ -1,3 +1,4 @@
 date	phase	commit	overall	replay	procedural	audio	note
 2026-11-05	phase-1	db2cba4	0.1303	0.1143	0.3083	0.0000	CPU: armwrestler 6/6, jsmolka arm+thumb pass; mgba deferred to phase 2
 2026-11-05	phase-2	8d55cb9	0.4326	0.4673	0.7611	0.0000	IRQ/halt, timers, DMA, bus wait states and open bus; all 16 procedural tests 1.0 except mgba-multiply-long
+2026-11-05	phase-3	9f4a767	0.6213	0.7818	0.7611	0.0000	sprites, affine/bitmap, windows/blending/mosaic compositor
