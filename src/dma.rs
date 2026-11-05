@@ -84,8 +84,6 @@ struct Channel {
     internal_count: u32,
     /// Start condition met; the transfer runs at the next `run_pending_transfers`.
     pending: bool,
-    /// `run_pending_transfers` calls to skip before an immediate transfer starts.
-    start_delay_steps: u8,
     /// Last 32-bit value this channel moved; an unreadable source returns it again.
     last_value: u32,
 }
@@ -102,7 +100,6 @@ impl Channel {
             internal_destination: 0,
             internal_count: 0,
             pending: false,
-            start_delay_steps: 0,
             last_value: 0,
         }
     }
@@ -155,11 +152,12 @@ impl Channel {
         self.internal_source = self.source_register & self.source_mask();
         self.internal_destination = self.destination_register & self.destination_mask();
         self.internal_count = self.unit_count();
+        // gbatek only advises software to "wait 2 clock cycles before accessing any DMA related
+        // registers" after enabling. Measured: goodboy-gameplay writes enable, then 0 in the
+        // next instruction, and the reference still copies; so the transfer runs right after
+        // the enabling instruction, before the next one.
+        // ponytail: no start delay is charged; a cycle-based scheduler could model it.
         self.pending = self.start_timing() == StartTiming::Immediate;
-        // gbatek: "wait 2 clock cycles" after enabling. The CPU keeps running meanwhile, so the
-        // instruction after the enabling write executes before the transfer.
-        // ponytail: one CPU step, not exactly 2 cycles; needs a cycle-based scheduler hook.
-        self.start_delay_steps = 1;
     }
 
     fn write_control(&mut self, value: u16, mask: u16) {
@@ -239,7 +237,7 @@ impl Dma {
 
     /// Lowest-numbered (highest-priority) channel waiting to run.
     fn highest_priority_pending(&self) -> Option<usize> {
-        self.channels.iter().position(|channel| channel.pending && channel.start_delay_steps == 0)
+        self.channels.iter().position(|channel| channel.pending)
     }
 }
 
@@ -319,9 +317,6 @@ pub fn run_pending_transfers(bus: &mut Bus) -> u32 {
     let mut total_cycles = 0;
     while let Some(channel_index) = bus.dma.highest_priority_pending() {
         total_cycles += run_transfer(bus, channel_index);
-    }
-    for channel in &mut bus.dma.channels {
-        channel.start_delay_steps = channel.start_delay_steps.saturating_sub(1);
     }
     total_cycles
 }
@@ -407,16 +402,21 @@ mod tests {
 
     const DMA3: u32 = 0x0400_00D4;
 
-    /// Two calls: the first only uses up the start delay of a freshly enabled channel.
-    fn run_after_start_delay(bus: &mut Bus) -> u32 {
-        run_pending_transfers(bus) + run_pending_transfers(bus)
-    }
-
     fn program_dma3(bus: &mut Bus, source: u32, destination: u32, count: u16, control: u16) {
         bus.write32(DMA3, source);
         bus.write32(DMA3 + 4, destination);
         bus.write16(DMA3 + 8, count);
         bus.write16(DMA3 + 10, control);
+    }
+
+    #[test]
+    fn immediate_transfer_runs_before_the_next_instruction_can_cancel_it() {
+        let mut bus = Bus::new(&[]);
+        bus.write32(0x0200_0000, 0xCAFE_F00D);
+        program_dma3(&mut bus, 0x0200_0000, 0x0300_0000, 1, 0x8400); // enable, 32-bit, immediate
+        run_pending_transfers(&mut bus); // gba.rs runs this after the enabling instruction
+        bus.write16(DMA3 + 10, 0); // the next instruction disables the channel
+        assert_eq!(bus.read32(0x0300_0000), 0xCAFE_F00D);
     }
 
     #[test]
@@ -427,7 +427,7 @@ mod tests {
         }
         program_dma3(&mut bus, 0x0200_0000, 0x0300_0100, 4, ENABLE_BIT | WORD_SIZE_BIT | IRQ_AT_END_BIT);
         bus.take_access_cycles();
-        let cycles = run_after_start_delay(&mut bus);
+        let cycles = run_pending_transfers(&mut bus);
         assert_eq!(bus.read32(0x0300_010C), 0x4444_4444);
         assert_eq!(cycles, 4 * (6 + 1) + 2);
         assert_eq!(bus.read16(DMA3 + 10) & ENABLE_BIT, 0);
@@ -441,7 +441,7 @@ mod tests {
         bus.write16(0x0300_0002, 0xBBBB);
         // Source decrement (1 << 7), destination fixed (2 << 5), halfwords.
         program_dma3(&mut bus, 0x0300_0004, 0x0300_0200, 2, ENABLE_BIT | (1 << 7) | (2 << 5));
-        run_after_start_delay(&mut bus);
+        run_pending_transfers(&mut bus);
         assert_eq!(bus.read16(0x0300_0200), 0xBBBB);
     }
 
@@ -451,7 +451,7 @@ mod tests {
         bus.write16(0x0300_0000, 0x1234);
         let control = ENABLE_BIT | REPEAT_BIT | (2 << START_TIMING_SHIFT) | (3 << DESTINATION_CONTROL_SHIFT);
         program_dma3(&mut bus, 0x0300_0000, 0x0300_0100, 1, control);
-        assert_eq!(run_after_start_delay(&mut bus), 0);
+        assert_eq!(run_pending_transfers(&mut bus), 0);
         bus.dma.notify_hblank();
         run_pending_transfers(&mut bus);
         assert_eq!(bus.read16(0x0300_0100), 0x1234);
@@ -472,7 +472,7 @@ mod tests {
         bus.write16(0x0400_00B8, 1);
         bus.write16(0x0400_00BA, vblank);
         bus.dma.notify_vblank();
-        run_after_start_delay(&mut bus);
+        run_pending_transfers(&mut bus);
         assert_eq!(bus.read16(0x0300_0100), 0x0002);
     }
 
@@ -483,9 +483,9 @@ mod tests {
         bus.write32(0x0400_00C0, FIFO_ADDRESSES[0]);
         bus.write16(0x0400_00C6, ENABLE_BIT | REPEAT_BIT | (3 << START_TIMING_SHIFT));
         bus.dma.notify_fifo_request(1); // wrong FIFO: nothing happens
-        assert_eq!(run_after_start_delay(&mut bus), 0);
+        assert_eq!(run_pending_transfers(&mut bus), 0);
         bus.dma.notify_fifo_request(0);
-        run_after_start_delay(&mut bus);
+        run_pending_transfers(&mut bus);
         assert_eq!(bus.dma.channels[1].internal_source, 0x0300_0010);
         assert_eq!(bus.dma.channels[1].internal_destination, FIFO_ADDRESSES[0]);
     }
@@ -506,10 +506,10 @@ mod tests {
         let mut bus = Bus::new(&[]);
         bus.write32(0x0300_0000, 0xDEAD_C0DE);
         program_dma3(&mut bus, 0x0300_0000, 0x0300_0100, 1, ENABLE_BIT | WORD_SIZE_BIT);
-        run_after_start_delay(&mut bus);
+        run_pending_transfers(&mut bus);
         // Halfwords from the BIOS area: destination bit 1 picks the half of the latched word.
         program_dma3(&mut bus, 0x0000_0000, 0x0300_0200, 2, ENABLE_BIT);
-        run_after_start_delay(&mut bus);
+        run_pending_transfers(&mut bus);
         assert_eq!(bus.read32(0x0300_0200), 0xDEAD_C0DE);
     }
 }
