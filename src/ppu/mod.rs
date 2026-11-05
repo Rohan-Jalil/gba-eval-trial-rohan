@@ -280,7 +280,6 @@ impl Ppu {
 
     /// Current internal reference point (X, Y) of BG2 (`affine_index` 0) or BG3 (1) for the line
     /// being drawn, signed 20.8 fixed point.
-    #[allow(dead_code)] // used by the Phase 3 affine worker
     pub(crate) fn affine_reference_point(&self, affine_index: usize) -> (i32, i32) {
         self.affine_reference[affine_index]
     }
