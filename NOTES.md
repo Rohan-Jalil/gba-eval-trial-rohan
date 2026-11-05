@@ -71,6 +71,8 @@ date, what, why.
 | 2026-11-05 | PSG review minors deferred: sweep shift 0 edge case comment, named register bit constants, `apply_wave_volume` helper | Minor. |
 | 2026-11-05 | First Phase 4 full grade (83a1e71: overall 0.7827, replay 0.7806, procedural 0.6863, audio 0.8852) failed the gate: mgba-io-read fell from 1.0 to 0.0025 and replay was 0.0012 below Phase 3. Its row and milestone files were discarded, not committed | The p4 subset didn't include mgba-io-read. Lesson: run the full procedural set before a milestone, not only the phase's own tests. |
 | 2026-11-05 | PSG channels whose envelope can never sound (bits 11-15 zero: initial volume 0, decrease) read as not playing in SOUNDCNT_X; writing such an envelope stops the channel. The check uses the merged register, so length-byte-only writes don't stop it | gbatek only says "0=No Sound". Measured from the mgba-io-read reference (SOUNDCNT_X row): back to 130/130, tonc-snd1 audio unchanged. Integrator fix after the PSG worker's 2 review rounds, reviewed twice (round 1 caught the byte-write bug). |
+| 2026-11-05 | Phase 4 milestone: overall 0.7976 (replay 0.7806, procedural 0.7611, audio 0.8852). Audio per replay: collie-defense 0.996, bulletgba 0.974, varooom 0.964, goodboy 0.951, waimanu 0.912, celeste 0.886, chip-advance 0.842, piugba 0.684, heartwrench 0.554, spout 0.199; tonc-snd1 0.981 | Audio gate met (> 0.399); overall well above Phase 3 (0.6213) and the 0.5345 baseline. |
+| 2026-11-05 | Human decision: accept the Phase 4 gate exception. Replay is 0.0012 below Phase 3 (0.7806 vs 0.7818), only from spout video 0.2978 to 0.2851, so we did not revert | Reverting would drop overall from 0.80 to 0.62. Likely cause: FIFO DMA refills now steal CPU cycles, shifting spout's already-desynchronised timing. Spout is a Phase 5 target. |
 
 ## Agent and model usage per phase
 
@@ -99,3 +101,5 @@ date, what, why.
 | 2026-11-05 | 3 | executor (integrator) | claude-opus-5-5 | main | Layer contract, PA/PD power-on, merges, serial grading, phase-3 milestone 0.6213 |
 | 2026-11-05 | 4 | apu-fifo-mixer | claude-opus-5-5 | phase4/apu-fifo-mixer | Merged after 1 review round (merge, clean, 7 minor). Audio: celeste 0.886, chip-advance 0.842, piugba 0.684 |
 | 2026-11-05 | 4 | apu-psg | claude-opus-5-5 | phase4/apu-psg | Merged after 2 review rounds (round 1: originality concern, Game Boy-doc details removed; round 2: merge, clean). tonc-snd1 audio 0.981 |
+| 2026-11-05 | 4 | reviewer (x5, fresh each time) | claude-opus-5-5 | phase4/* + main | fifo-mixer 1, psg 2, integrator SOUNDCNT_X fix 2 rounds; no grading (serialised) |
+| 2026-11-05 | 4 | executor (integrator) | claude-opus-5-5 | main | APU contract, merges, SOUNDCNT_X fix, gate exception agreed with the human, phase-4 milestone 0.7976 |
