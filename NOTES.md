@@ -35,6 +35,8 @@ date, what, why.
 | 2026-11-05 | ARM: test ops (TST/TEQ/CMP/CMN) with S=1 and Rd=R15 restore the CPSR from the SPSR and do not write the PC. Halfword-store opcodes 2/3 (ARMv5 LDRD/STRD) run as STRH | gbatek describes the "P" form for ARMv2 only; jsmolka arm.gba test 234 requires it. gbatek gives no ARMv4 behaviour for LDRD/STRD. |
 | 2026-11-05 | Multiplies leave C unchanged (MUL/MLA and long forms). A long-multiply carry model fitted to mgba-suite screens was removed at review | gbatek only says "C destroyed". The reviewer flagged the fitted rule as an originality concern. Measured cost: mgba-multiply-long would show 52/72 checks once IRQ and DMA work. |
 | 2026-11-05 | cpu-arm review round 2 minors deferred: undefined for non-zero bits 11-4 on the MSR register form; mnemonic comments on ALU opcodes; named shift-by-register cycle flag; rename `significant` | Minor; no gate impact. |
+| 2026-11-05 | Human decision: Phase 1 closes with 6/9 CPU gate tests at 1.0 (all armwrestler pages) plus jsmolka arm.gba and thumb.gba passing. mgba-shifter, mgba-carry and mgba-multiply-long move to the Phase 2 gate | mgba-suite waits for an interrupt and loads its font by DMA, both Phase 2 work. In the ARM worker's local IRQ+DMA test, shifter (140/140) and carry (93/93) pass. |
+| 2026-11-05 | Human decision: accept losing mgba-multiply-long. Multiplies keep C unchanged and no carry model is derived | No gbatek source for the rule, and the fitted version raised an originality concern. Cost is about 0.35 x 1/9 of the cpu subsystem, roughly 0.008 overall. |
 
 ## Agent and model usage per phase
 
