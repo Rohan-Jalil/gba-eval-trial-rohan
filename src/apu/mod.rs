@@ -1,7 +1,8 @@
 //! Sound controller, IO 0x060-0x0AF (gbatek: GBA Sound Controller).
 //!
-//! Phase 0 stub: registers are stored and silence is produced at the rate SOUNDBIAS selects,
-//! so the host already receives the right number of samples per frame.
+//! This file is the mixer: SOUNDCNT_L/H/X, SOUNDBIAS, the FIFO registers, the output buffer and
+//! sample rate. PSG channel registers (0x060-0x07F, wave RAM 0x090-0x09F) are routed to psg.rs;
+//! the mixer steps the PSG and reads `channel_outputs()` (Phase 4 contract).
 
 mod fifo;
 mod psg;
@@ -54,6 +55,7 @@ impl Apu {
     /// Advance by `cycles`, appending one stereo pair per output sample period.
     pub fn step(&mut self, cycles: u32) {
         let cycles_per_sample = CPU_CLOCK_HZ / self.sample_rate();
+        self.psg.step(cycles);
         self.cycles_until_sample += cycles;
         while self.cycles_until_sample >= cycles_per_sample {
             self.cycles_until_sample -= cycles_per_sample;
@@ -67,7 +69,7 @@ impl Apu {
 
     /// Mix PSG and FIFO channels into one stereo pair. Stub: silence.
     fn mix_sample(&mut self) -> (i16, i16) {
-        let _ = (&self.psg, &self.fifos);
+        let _ = (self.psg.channel_outputs(), self.psg.active_channels(), &self.fifos);
         (0, 0)
     }
 
@@ -78,13 +80,25 @@ impl Apu {
     }
 
     pub fn io_read16(&mut self, offset: u32) -> u16 {
+        if is_psg_offset(offset) {
+            return self.psg.io_read16(offset);
+        }
         self.registers.read(offset)
     }
 
     pub fn io_write16(&mut self, offset: u32, value: u16, mask: u16) {
+        if is_psg_offset(offset) {
+            return self.psg.io_write16(offset, value, mask);
+        }
         // SOUNDCNT_X: only bit 7 (master enable) is writable; bits 0-3 are channel status flags
         // the APU sets itself (gbatek: GBA Sound Control Registers).
         let mask = if offset == SOUNDCNT_X_OFFSET { mask & SOUNDCNT_X_MASTER_ENABLE } else { mask };
         self.registers.write(offset, value, mask)
     }
+}
+
+/// PSG channel registers and wave RAM belong to psg.rs.
+fn is_psg_offset(offset: u32) -> bool {
+    (psg::REGISTERS_START..=psg::REGISTERS_END).contains(&offset)
+        || (psg::WAVE_RAM_START..=psg::WAVE_RAM_END).contains(&offset)
 }
