@@ -139,6 +139,89 @@ impl WaitStates {
     }
 }
 
+/// WAITCNT bit 14: Game Pak prefetch buffer enable (gbatek: 4000204h WAITCNT).
+const WAITCNT_PREFETCH_ENABLE: u16 = 1 << 14;
+/// The prefetch buffer holds up to eight halfwords (gbatek: GBA GamePak Prefetch).
+const PREFETCH_CAPACITY: u32 = 8;
+
+/// Game Pak prefetch buffer (gbatek: GBA GamePak Prefetch). While the CPU runs ROM code and leaves
+/// the Game Pak bus idle (internal cycles, accesses to other regions), the buffer keeps reading the
+/// following opcode halfwords, one sequential access each. An opcode fetch that finds its halfword
+/// buffered costs 1 cycle; one that finds it in flight waits only for the rest of that access.
+#[derive(Clone, Copy, Debug, Default)]
+struct PrefetchBuffer {
+    /// False until ROM code is fetched, and after a non-ROM opcode fetch.
+    running: bool,
+    /// Address of the oldest buffered halfword, i.e. the opcode the buffer expects next.
+    next_opcode_address: u32,
+    /// Halfwords ready in the buffer (0..=8). The one being read is at next + 2 * buffered.
+    buffered_halfwords: u32,
+    /// Cycles already spent on the halfword being read.
+    fetch_progress: u32,
+    /// Cost of one sequential Game Pak access in the current wait state.
+    halfword_cost: u32,
+    /// Cost of a non-sequential access, paid when a data access interrupted the sequence.
+    restart_cost: u32,
+    /// Cost of the halfword being read: `halfword_cost`, or `restart_cost` after an interruption.
+    in_flight_cost: u32,
+}
+
+impl PrefetchBuffer {
+    /// Let the buffer use `cycles` of an idle Game Pak bus.
+    fn run_idle(&mut self, cycles: u32) {
+        if !self.running {
+            return;
+        }
+        let mut progress = self.fetch_progress + cycles;
+        while progress >= self.in_flight_cost && self.buffered_halfwords < PREFETCH_CAPACITY {
+            progress -= self.in_flight_cost;
+            self.in_flight_cost = self.halfword_cost;
+            self.buffered_halfwords += 1;
+        }
+        self.fetch_progress = if self.buffered_halfwords == PREFETCH_CAPACITY { 0 } else { progress };
+    }
+
+    /// Start prefetching right after the opcode halfword at `address` (a buffer miss).
+    // ponytail: buffer fetches always cost S, even when crossing a 128K block (N on hardware).
+    fn restart_after(&mut self, address: u32, halfword_cost: u32, restart_cost: u32) {
+        *self = PrefetchBuffer {
+            running: true,
+            next_opcode_address: address.wrapping_add(2),
+            buffered_halfwords: 0,
+            fetch_progress: 0,
+            halfword_cost,
+            restart_cost,
+            in_flight_cost: halfword_cost,
+        };
+    }
+
+    /// A data access took the Game Pak bus: the halfword being read is dropped and read again
+    /// with a non-sequential access. Buffered halfwords stay.
+    // guess: gbatek does not say whether ROM data reads flush the buffer.
+    fn interrupt(&mut self) {
+        self.fetch_progress = 0;
+        self.in_flight_cost = self.restart_cost;
+    }
+
+    /// Cycles for the CPU to take the opcode halfword at `address` from the buffer, or `None` on
+    /// a miss. A buffered halfword takes 1 cycle; the opcode fetch holds the bus, so the buffer pauses.
+    fn take_halfword(&mut self, address: u32) -> Option<u32> {
+        if !self.running || address != self.next_opcode_address {
+            return None;
+        }
+        self.next_opcode_address = address.wrapping_add(2);
+        if self.buffered_halfwords > 0 {
+            self.buffered_halfwords -= 1;
+            Some(1)
+        } else {
+            let remaining = self.in_flight_cost - self.fetch_progress;
+            self.fetch_progress = 0;
+            self.in_flight_cost = self.halfword_cost;
+            Some(remaining.max(1))
+        }
+    }
+}
+
 /// Offset returned for IO addresses with no register; io.rs reads them as open bus.
 pub const UNMAPPED_IO_OFFSET: u32 = 0xFFFF_FFFC;
 
@@ -209,6 +292,16 @@ pub struct Bus {
     executing_thumb: bool,
     /// The last opcode word prefetched while executing inside the BIOS (BIOS read protection).
     last_bios_prefetch: u32,
+    /// Set by `note_instruction_fetch`: the next access is the opcode fetch itself.
+    opcode_fetch_pending: bool,
+    prefetch: PrefetchBuffer,
+    /// Frame position (line * 1232 + line cycle) of the last opcode fetch, and the access cycles
+    /// charged since. Their difference is the time the bus sat idle (CPU internal cycles), which
+    /// the prefetch buffer uses.
+    // ponytail: idle time is derived from the PPU clock because the CPU reports internal cycles
+    // only as a step total; a `bus.idle(cycles)` call from the CPU would be the exact contract.
+    last_fetch_frame_cycle: u32,
+    cycles_charged_since_fetch: u32,
 }
 
 impl Bus {
@@ -234,6 +327,10 @@ impl Bus {
             executing_thumb: false,
             // gbatek: after startup the protected value is the opcode at [00DCh+8].
             last_bios_prefetch: bios_read(BIOS_STARTUP_PREFETCH_ADDRESS, 4),
+            opcode_fetch_pending: false,
+            prefetch: PrefetchBuffer::default(),
+            last_fetch_frame_cycle: 0,
+            cycles_charged_since_fetch: 0,
         }
     }
 
@@ -251,9 +348,65 @@ impl Bus {
             None => address == self.next_sequential_address,
         };
         let sequential = continues_previous && (address & ROM_SEQUENTIAL_BLOCK_MASK) != 0;
-        self.access_cycles += self.wait_states.access_cost(region, address, width, sequential);
+        let is_opcode_fetch = std::mem::take(&mut self.opcode_fetch_pending);
+        let cost = if region == Region::Rom && is_opcode_fetch && self.waitcnt & WAITCNT_PREFETCH_ENABLE != 0 {
+            self.rom_opcode_fetch_cost(address, width, sequential)
+        } else {
+            let cost = self.wait_states.access_cost(region, address, width, sequential);
+            if is_opcode_fetch {
+                self.prefetch.running = false; // code left ROM
+            } else if region == Region::Rom {
+                self.prefetch.interrupt();
+            } else {
+                self.prefetch.run_idle(cost);
+            }
+            cost
+        };
+        self.access_cycles += cost;
+        self.cycles_charged_since_fetch += cost;
         self.next_sequential_address = address.wrapping_add(width_in_bytes(width));
         region
+    }
+
+    /// Cost of fetching a ROM opcode with the prefetch buffer enabled: each halfword comes from
+    /// the buffer when it is the one expected, otherwise from a normal access that restarts the
+    /// buffer behind it (gbatek: GBA GamePak Prefetch).
+    fn rom_opcode_fetch_cost(&mut self, address: u32, width: Width, sequential: bool) -> u32 {
+        let wait_state = (((address >> 24) - 0x08) / 2) as usize;
+        let sequential_cost = self.wait_states.rom_sequential[wait_state];
+        let nonsequential_cost = self.wait_states.rom_nonsequential[wait_state];
+        let halfword_count = if width == Width::Word { 2 } else { 1 };
+        let mut cost = 0;
+        for index in 0..halfword_count {
+            let halfword_address = address.wrapping_add(2 * index);
+            cost += match self.prefetch.take_halfword(halfword_address) {
+                Some(buffered_cost) => buffered_cost,
+                None => {
+                    self.prefetch.restart_after(halfword_address, sequential_cost, nonsequential_cost);
+                    if index == 0 && !sequential {
+                        nonsequential_cost
+                    } else {
+                        sequential_cost
+                    }
+                }
+            };
+        }
+        cost
+    }
+
+    /// Give the prefetch buffer the bus-idle time since the previous opcode fetch: elapsed time
+    /// (from the PPU's position in the frame) minus the access cycles charged in between.
+    fn run_prefetch_for_idle_time(&mut self) {
+        let frame_cycle = self.ppu.vcount as u32 * crate::ppu::CYCLES_PER_LINE + self.ppu.line_cycle;
+        let frame_length = crate::ppu::CYCLES_PER_LINE * crate::ppu::LINES_PER_FRAME as u32;
+        let elapsed = if frame_cycle >= self.last_fetch_frame_cycle {
+            frame_cycle - self.last_fetch_frame_cycle
+        } else {
+            frame_cycle + frame_length - self.last_fetch_frame_cycle // the frame wrapped
+        };
+        self.prefetch.run_idle(elapsed.saturating_sub(self.cycles_charged_since_fetch));
+        self.last_fetch_frame_cycle = frame_cycle;
+        self.cycles_charged_since_fetch = 0;
     }
 
     /// Make the next access sequential (S) or non-sequential (N) regardless of its address.
@@ -277,6 +430,8 @@ impl Bus {
             _ => return,
         }
         self.wait_states = WaitStates::from_registers(self.waitcnt, self.memory_control);
+        self.prefetch.running = false; // restart with the new timing at the next ROM opcode
+
     }
 
     /// SRAM read at any width: the byte at the exact address, repeated across the result
@@ -324,6 +479,8 @@ impl Bus {
     pub fn note_instruction_fetch(&mut self, address: u32, thumb: bool) {
         self.executing_address = address;
         self.executing_thumb = thumb;
+        self.run_prefetch_for_idle_time();
+        self.opcode_fetch_pending = true;
         if (address as usize) < BIOS_SIZE {
             let prefetch = address.wrapping_add(if thumb { 4 } else { 8 });
             self.last_bios_prefetch = bios_read(prefetch & !3, 4);
@@ -625,6 +782,40 @@ mod tests {
         assert_eq!(bus.take_access_cycles(), 4);
         bus.read8(0x0E00_0000); // SRAM field 3 = 8 waits
         assert_eq!(bus.take_access_cycles(), 9);
+    }
+
+    #[test]
+    fn prefetch_buffer_serves_rom_opcodes_after_idle_time() {
+        let mut bus = Bus::new(&[0; 0x1000]);
+        bus.write16(0x0400_0204, 0x4317); // WS0 3,1 (N=4, S=2), prefetch on
+        bus.take_access_cycles();
+        bus.note_instruction_fetch(0x0800_0100, true);
+        bus.read16(0x0800_0100);
+        assert_eq!(bus.take_access_cycles(), 4, "miss: normal N access");
+        bus.write32(0x0300_0000, 0); // 1 cycle: half of the next halfword's S access
+        bus.take_access_cycles();
+        bus.ppu.line_cycle += 4 + 1 + 3; // fetch + store + 3 internal cycles
+        bus.note_instruction_fetch(0x0800_0102, true);
+        bus.read16(0x0800_0102);
+        assert_eq!(bus.take_access_cycles(), 1, "4 bus-idle cycles buffered two halfwords");
+        bus.ppu.line_cycle += 1;
+        bus.note_instruction_fetch(0x0800_0104, true);
+        bus.read16(0x0800_0104);
+        assert_eq!(bus.take_access_cycles(), 1);
+        bus.ppu.line_cycle += 1;
+        bus.note_instruction_fetch(0x0800_0106, true);
+        bus.read16(0x0800_0106);
+        assert_eq!(bus.take_access_cycles(), 2, "buffer empty: a full S access");
+        bus.read8(0x0800_0800); // ROM data read interrupts the buffer
+        bus.take_access_cycles();
+        bus.ppu.line_cycle += 2 + 4;
+        bus.note_instruction_fetch(0x0800_0108, true);
+        bus.read16(0x0800_0108);
+        assert_eq!(bus.take_access_cycles(), 4, "resumes with an N access");
+        bus.ppu.line_cycle += 4;
+        bus.note_instruction_fetch(0x0800_0200, true);
+        bus.read16(0x0800_0200);
+        assert_eq!(bus.take_access_cycles(), 4, "branch target misses");
     }
 
     #[test]
