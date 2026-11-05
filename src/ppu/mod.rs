@@ -163,6 +163,8 @@ pub struct Ppu {
     /// Reloaded from BGxX/BGxY on write and at VBlank, advanced by PB/PD after every visible line
     /// (gbatek: LCD I/O BG Rotation/Scaling, "Internal Reference Point Registers").
     affine_reference: [(i32, i32); 2],
+    /// Per BG, the first line of the current vertical mosaic block (gbatek: LCD I/O Mosaic Function).
+    mosaic_source_lines: [[LayerPixel; SCREEN_WIDTH]; 4],
 }
 
 impl Ppu {
@@ -178,6 +180,7 @@ impl Ppu {
             dispstat: DISPSTAT_VCOUNT_FLAG,
             registers: PlainRegisters::new(IO_START),
             affine_reference: [(0, 0); 2],
+            mosaic_source_lines: [[TRANSPARENT_PIXEL; SCREEN_WIDTH]; 4],
         }
     }
 
@@ -258,7 +261,6 @@ impl Ppu {
 
     /// Raw value of any PPU register stored at `offset` (0x000-0x05F), e.g. WININ, BLDCNT,
     /// MOSAIC. Unlike `io_read16`, write-only registers return what was written.
-    #[allow(dead_code)] // used by the Phase 3 effects/sprites workers
     pub(crate) fn register(&self, offset: u32) -> u16 {
         self.registers.read(offset)
     }
@@ -366,32 +368,6 @@ impl Ppu {
         layers.sprites_enabled = dispcnt & DISPCNT_OBJ_ENABLE != 0;
         obj::render_sprite_line(self, line, &mut layers.sprites, &mut layers.obj_window);
         self.compose_line(line, &layers);
-    }
-
-    /// Merge the line's layers over the backdrop (gbatek: LCD I/O BG Control, "BG0 is having
-    /// the highest" priority on ties; LCD OBJ - OAM Attributes, a sprite is in front of a BG
-    /// of the same priority; LCD Color Palettes, Backdrop Color).
-    // ponytail: priority only; the Phase 3 effects worker adds windows and blending here.
-    fn compose_line(&mut self, line: usize, layers: &LineLayers) {
-        let backdrop = self.palette_color(0);
-        let start = line * SCREEN_WIDTH;
-        for x in 0..SCREEN_WIDTH {
-            let mut best: Option<LayerPixel> = None;
-            if layers.sprites_enabled && !layers.sprites[x].is_transparent {
-                best = Some(layers.sprites[x]);
-            }
-            for (background_index, layer) in layers.backgrounds.iter().enumerate() {
-                let pixel = layer[x];
-                if !layers.background_enabled[background_index] || pixel.is_transparent {
-                    continue;
-                }
-                if best.is_none_or(|current| pixel.priority < current.priority) {
-                    best = Some(pixel);
-                }
-            }
-            let color = best.map_or(backdrop, |pixel| pixel.color);
-            self.framebuffer[start + x] = bgr555_to_abgr8888(color);
-        }
     }
 
     pub fn io_read16(&mut self, offset: u32) -> u16 {
