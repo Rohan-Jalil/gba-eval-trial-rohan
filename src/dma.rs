@@ -281,6 +281,10 @@ fn read_halfword(bus: &mut Bus, address: u32, destination: u32, last_value: &mut
     }
 }
 
+fn is_game_pak_rom(address: u32) -> bool {
+    (0x0800_0000..0x0E00_0000).contains(&address)
+}
+
 fn is_game_pak(address: u32) -> bool {
     (0x0800_0000..0x1000_0000).contains(&address)
 }
@@ -309,7 +313,13 @@ fn run_transfer(bus: &mut Bus, channel_index: usize) -> u32 {
     let word_sized = fifo_mode || channel.control & WORD_SIZE_BIT != 0;
     let unit_bytes = if word_sized { 4 } else { 2 };
     let unit_count = if fifo_mode { FIFO_UNITS } else { channel.internal_count };
-    let source_control = address_control(channel.control >> SOURCE_CONTROL_SHIFT);
+    // The ROM chip increments its own latched address on sequential reads (gbatek: GBA Cartridges,
+    // ROM Chip), and DMA reads after the first unit are sequential, so a ROM source always increments.
+    let source_control = if is_game_pak_rom(channel.internal_source) {
+        AddressControl::Increment
+    } else {
+        address_control(channel.control >> SOURCE_CONTROL_SHIFT)
+    };
     let destination_control = if fifo_mode {
         AddressControl::Fixed
     } else {
