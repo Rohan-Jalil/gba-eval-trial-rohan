@@ -1,0 +1,2 @@
+date	phase	commit	overall	replay	procedural	audio	note
+2026-11-05	phase-2	8d55cb9	0.4326	0.4673	0.7611	0.0000	IRQ/halt, timers, DMA, bus wait states and open bus; all 16 procedural tests 1.0 except mgba-multiply-long
