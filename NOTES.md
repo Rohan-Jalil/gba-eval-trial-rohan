@@ -73,4 +73,4 @@ date, what, why.
 | 2026-11-05 | 2 | irq-halt | claude-opus-5-5 | phase2/irq-halt | Merged after 1 review round (merge, clean, 7 minor). Unblocks mgba-shifter/carry once DMA lands; tonc-snd1 video 0.992 |
 | 2026-11-05 | 2 | dma | claude-opus-5-5 | phase2/dma | Merged after 2 review rounds (round 1: changes needed, N/S timing and readable regions; round 2: merge, clean). dma-priority 1.0, mgba-dma 1.0 |
 | 2026-11-05 | 2 | executor (integrator) | claude-opus-5-5 | main | bus.rs/io.rs memory work (wait states, open bus, SRAM, VRAM, IO masks), 2 review rounds on its own diff (round 1: changes needed; round 2: merge, clean). memory, mgba-io-read, ppu-vram-mirror 1.0 |
-| 2026-11-05 | 2 | reviewer (x9, fresh each time) | claude-opus-5-5 | phase2/* + main | irq-halt 1, timers 2, dma 2, integrator bus/io 2 rounds (plus 2 review passes inside fix rounds) |
+| 2026-11-05 | 2 | reviewer (x7, fresh each time) | claude-opus-5-5 | phase2/* + main | irq-halt 1, timers 2, dma 2, integrator bus/io 2 rounds |
