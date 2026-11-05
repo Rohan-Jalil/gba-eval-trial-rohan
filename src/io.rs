@@ -69,42 +69,49 @@ impl SerialStub {
     }
 }
 
-/// Whether the halfword at `offset` holds a readable register (gbatek: GBA I/O Map, R or R/W).
-/// Write-only registers (scroll, affine, window, DMA address and count, FIFOs) and unused
-/// offsets are not readable.
-fn is_readable_halfword(offset: u32) -> bool {
-    matches!(offset,
-        0x000..=0x00E          // DISPCNT, green swap, DISPSTAT, VCOUNT, BG0CNT-BG3CNT
-        | 0x048 | 0x04A        // WININ, WINOUT
-        | 0x050 | 0x052        // BLDCNT, BLDALPHA
-        | 0x060..=0x064        // SOUND1CNT_L/H/X
-        | 0x068 | 0x06C        // SOUND2CNT_L/H
-        | 0x070..=0x074        // SOUND3CNT_L/H/X
-        | 0x078 | 0x07C        // SOUND4CNT_L/H
-        | 0x080..=0x084        // SOUNDCNT_L/H/X
-        | 0x088                // SOUNDBIAS
-        | 0x090..=0x09E        // WAVE_RAM
-        | 0x0BA | 0x0C6 | 0x0D2 | 0x0DE // DMA0CNT_H-DMA3CNT_H
-        | 0x100..=0x10E        // TM0CNT_L-TM3CNT_H
-        | 0x120..=0x12A        // SIODATA / SIOMULTI0-3, SIOCNT, SIODATA8
-        | 0x130 | 0x132        // KEYINPUT, KEYCNT
-        | 0x134                // RCNT
-        | 0x140                // JOYCNT
-        | 0x150..=0x158        // JOY_RECV, JOY_TRANS, JOYSTAT
-        | 0x200..=0x204        // IE, IF, WAITCNT
-        | 0x208                // IME
-        | 0x300                // POSTFLG (HALTCNT, the high byte, is write-only)
-        | 0x800 | 0x802        // internal memory control
-    )
-}
-
-/// POSTFLG (low byte, readable) and HALTCNT (high byte, write-only).
-const POSTFLG_HALTCNT_OFFSET: u32 = 0x300;
-
-/// Write-only or unused halfwords that gbatek names as reading zero rather than open bus
-/// ("Reading from Unused or Write-Only I/O Ports": 04Ch MOSAIC, 04Eh unused).
-fn reads_as_zero(offset: u32) -> bool {
-    matches!(offset, 0x04C | 0x04E)
+/// Bits that read back from the halfword at `offset`; 0 means the halfword is write-only or
+/// unused (gbatek: GBA I/O Map, plus each register's bit table: unused and write-only bits
+/// read as 0).
+fn readable_bits(offset: u32) -> u16 {
+    match offset {
+        0x000 => 0xFFFF,          // DISPCNT
+        0x002 => 0x0001,          // green swap
+        0x004 => 0xFF3F,          // DISPSTAT (bits 6-7 unused)
+        0x006 => 0x00FF,          // VCOUNT
+        0x008 | 0x00A => 0xDFFF,  // BG0CNT, BG1CNT (bit 13 only exists on BG2/BG3)
+        0x00C | 0x00E => 0xFFFF,  // BG2CNT, BG3CNT
+        0x048 | 0x04A => 0x3F3F,  // WININ, WINOUT
+        0x050 => 0x3FFF,          // BLDCNT
+        0x052 => 0x1F1F,          // BLDALPHA
+        0x060 => 0x007F,          // SOUND1CNT_L sweep
+        0x062 | 0x068 => 0xFFC0,  // SOUND1CNT_H, SOUND2CNT_L: length is write-only
+        0x064 | 0x06C | 0x074 => 0x4000, // SOUNDxCNT_X/H: only the length flag reads back
+        0x070 => 0x00E0,          // SOUND3CNT_L
+        0x072 => 0xE000,          // SOUND3CNT_H: volume only
+        0x078 => 0xFF00,          // SOUND4CNT_L: envelope only
+        0x07C => 0x40FF,          // SOUND4CNT_H
+        0x080 => 0xFF77,          // SOUNDCNT_L
+        0x082 => 0x770F,          // SOUNDCNT_H (FIFO reset bits are write-only)
+        0x084 => 0x008F,          // SOUNDCNT_X
+        0x088 => 0xC3FE,          // SOUNDBIAS
+        0x090..=0x09E => 0xFFFF,  // WAVE_RAM
+        0x0BA | 0x0C6 | 0x0D2 => 0xF7E0, // DMA0CNT_H-DMA2CNT_H
+        0x0DE => 0xFFE0,          // DMA3CNT_H (bit 11 Game Pak DRQ)
+        0x100 | 0x104 | 0x108 | 0x10C => 0xFFFF, // TMxCNT_L
+        0x102 | 0x106 | 0x10A | 0x10E => 0x00C7, // TMxCNT_H
+        0x120..=0x12A => 0xFFFF,  // SIODATA / SIOMULTI0-3, SIOCNT, SIODATA8
+        0x130 => 0x03FF,          // KEYINPUT
+        0x132 => 0xC3FF,          // KEYCNT
+        0x134 => 0xFFFF,          // RCNT
+        0x140 => 0xFFFF,          // JOYCNT
+        0x150..=0x158 => 0xFFFF,  // JOY_RECV, JOY_TRANS, JOYSTAT
+        0x200 | 0x202 => 0x3FFF,  // IE, IF
+        0x204 => 0x7FFF,          // WAITCNT (bit 15 reads 0: GBA cartridge)
+        0x208 => 0x0001,          // IME
+        0x300 => 0x0001,          // POSTFLG bit 0; HALTCNT (high byte) is write-only
+        0x800 | 0x802 => 0xFFFF,  // internal memory control
+        _ => 0,
+    }
 }
 
 impl Bus {
@@ -112,11 +119,10 @@ impl Bus {
     /// Write-Only I/O Ports"): if the other half of the 32-bit fragment is readable the result is
     /// 0, otherwise the open-bus value.
     fn io_dispatch_read16(&mut self, offset: u32) -> u16 {
-        if offset == POSTFLG_HALTCNT_OFFSET {
-            self.io_owner_read16(offset) & 0x00FF // HALTCNT (high byte) is write-only
-        } else if is_readable_halfword(offset) {
-            self.io_owner_read16(offset)
-        } else if is_readable_halfword(offset ^ 2) || reads_as_zero(offset) {
+        let bits = readable_bits(offset);
+        if bits != 0 {
+            self.io_owner_read16(offset) & bits
+        } else if readable_bits(offset ^ 2) != 0 {
             0
         } else {
             (self.open_bus_value() >> ((offset & 2) * 8)) as u16

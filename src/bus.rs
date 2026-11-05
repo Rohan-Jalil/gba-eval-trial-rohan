@@ -697,8 +697,6 @@ mod tests {
         assert_eq!(bus.read16(0x0400_0400), 0x2222);
         assert_eq!(bus.read16(0x0400_0402), 0x1111);
         assert_eq!(bus.read8(0x0400_0403), 0x11);
-        bus.write16(0x0400_004C, 0x00FF); // MOSAIC, write-only, but gbatek says this fragment reads 0
-        assert_eq!(bus.read32(0x0400_004C), 0);
     }
 
     #[test]

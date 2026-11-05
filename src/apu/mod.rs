@@ -79,6 +79,12 @@ impl Apu {
     }
 
     pub fn io_write16(&mut self, offset: u32, value: u16, mask: u16) {
+        // SOUNDCNT_X: only bit 7 (master enable) is writable; bits 0-3 are channel status flags
+        // the APU sets itself (gbatek: GBA Sound Control Registers).
+        let value = if offset == SOUNDCNT_X_OFFSET { value & SOUNDCNT_X_MASTER_ENABLE } else { value };
         self.registers.write(offset, value, mask)
     }
 }
+
+const SOUNDCNT_X_OFFSET: u32 = 0x084; // SOUNDCNT_X, sound on/off and channel status
+const SOUNDCNT_X_MASTER_ENABLE: u16 = 0x0080; // bit 7, PSG/FIFO master enable
