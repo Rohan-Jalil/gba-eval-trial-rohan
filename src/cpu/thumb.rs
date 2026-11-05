@@ -469,7 +469,7 @@ fn long_branch_second_half(cpu: &mut Cpu, opcode: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cpu::{CPSR_THUMB, MODE_SYSTEM, MODE_SUPERVISOR};
+    use crate::cpu::{CPSR_THUMB, MODE_SUPERVISOR, MODE_SYSTEM, MODE_UNDEFINED};
 
     const CODE: u32 = 0x0300_0000;
 
@@ -652,6 +652,51 @@ mod tests {
         let (mut cpu, mut bus) = setup(&[0xF7FF, 0xFFFE]);
         run(&mut cpu, &mut bus, 2);
         assert_eq!(cpu.registers[PROGRAM_COUNTER], CODE);
+    }
+
+    #[test]
+    fn bx_r15_switches_to_arm_word_aligned() {
+        let (mut cpu, mut bus) = setup(&[0x4778]); // BX R15 at a word-aligned address
+        run(&mut cpu, &mut bus, 1);
+        assert!(!cpu.in_thumb_state());
+        assert_eq!(cpu.registers[PROGRAM_COUNTER], CODE + 4);
+        let (mut cpu, mut bus) = setup(&[0x46C0, 0x4778]); // NOP ; BX R15 at CODE+2
+        run(&mut cpu, &mut bus, 2);
+        assert_eq!(cpu.registers[PROGRAM_COUNTER], (CODE + 6) & !2, "($+4) AND NOT 2");
+    }
+
+    #[test]
+    fn push_and_pop_with_empty_list() {
+        let (mut cpu, mut bus) = setup(&[0xB400, 0xBC00]); // PUSH {} ; POP {}
+        run(&mut cpu, &mut bus, 1);
+        assert_eq!(cpu.registers[STACK_POINTER], 0x0300_7EC0);
+        assert_eq!(bus.read32(0x0300_7EC0), CODE + 6, "R15 stored as $+6");
+        bus.write32(0x0300_7EC0, 0x0300_0301);
+        run(&mut cpu, &mut bus, 1);
+        assert_eq!(cpu.registers[STACK_POINTER], 0x0300_7F00);
+        assert_eq!(cpu.registers[PROGRAM_COUNTER], 0x0300_0300);
+        assert!(cpu.in_thumb_state());
+    }
+
+    #[test]
+    fn hi_register_add_to_pc() {
+        let (mut cpu, mut bus) = setup(&[0x4487]); // ADD PC,R0
+        cpu.registers[0] = 0x11;
+        run(&mut cpu, &mut bus, 1);
+        assert_eq!(cpu.registers[PROGRAM_COUNTER], CODE + 0x14, "$+4 + 11h, halfword-aligned");
+        assert!(cpu.in_thumb_state());
+    }
+
+    #[test]
+    fn undefined_encodings() {
+        for opcode in [0xDE00, 0xE800] {
+            // condition E of THUMB.16, and the ARMv5 BLX second half (11101b)
+            let (mut cpu, mut bus) = setup(&[opcode]);
+            run(&mut cpu, &mut bus, 1);
+            assert_eq!(cpu.mode(), MODE_UNDEFINED, "opcode {opcode:04X}");
+            assert_eq!(cpu.registers[LINK_REGISTER], CODE + 2);
+            assert_eq!(cpu.registers[PROGRAM_COUNTER], 0x04);
+        }
     }
 
     #[test]
