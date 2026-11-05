@@ -1,0 +1,3 @@
+# `cargo wasm` builds the graded artifact: target/wasm32-unknown-unknown/release/gba_emu.wasm
+[alias]
+wasm = "build --release --lib --target wasm32-unknown-unknown"
