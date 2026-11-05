@@ -179,6 +179,12 @@ pub struct Bus {
     memory_control: u32,
     /// Address that would continue the previous access sequentially (for S vs N cycles).
     next_sequential_address: u32,
+    /// Address of the instruction the CPU is executing and its state, set by the CPU before each
+    /// fetch. Open-bus reads and BIOS read protection are derived from it.
+    executing_address: u32,
+    executing_thumb: bool,
+    /// The last opcode word prefetched while executing inside the BIOS (BIOS read protection).
+    last_bios_prefetch: u32,
 }
 
 impl Bus {
@@ -199,6 +205,9 @@ impl Bus {
             waitcnt: 0,
             memory_control: MEMORY_CONTROL_RESET,
             next_sequential_address: u32::MAX,
+            executing_address: 0,
+            executing_thumb: false,
+            last_bios_prefetch: 0,
         }
     }
 
@@ -256,9 +265,70 @@ impl Bus {
         if bg_mode >= 3 { 0x14000 } else { 0x10000 }
     }
 
+    /// Called by the CPU before it fetches the instruction at `address`. Keeps the state needed
+    /// for open-bus values and BIOS read protection (gbatek: Reading from Unused Memory).
+    pub fn note_instruction_fetch(&mut self, address: u32, thumb: bool) {
+        self.executing_address = address;
+        self.executing_thumb = thumb;
+        if (address as usize) < BIOS_SIZE {
+            let prefetch = address.wrapping_add(if thumb { 4 } else { 8 });
+            self.last_bios_prefetch = bios_read(prefetch & !3, 4);
+        }
+    }
+
+    /// Value seen when reading unused memory: the opcode the CPU most recently prefetched
+    /// (gbatek: Reading from Unused Memory). ARM: [$+8]. THUMB depends on the code's region.
+    pub fn open_bus_value(&self) -> u32 {
+        let address = self.executing_address;
+        if !self.executing_thumb {
+            return self.peek16(address.wrapping_add(8)) as u32
+                | (self.peek16(address.wrapping_add(10)) as u32) << 16;
+        }
+        let at = |delta: u32| self.peek16(address.wrapping_add(delta)) as u32;
+        let word_aligned = address & 2 == 0;
+        match region_of(address) {
+            Region::Bios | Region::Oam => {
+                if word_aligned { at(4) | at(6) << 16 } else { at(2) | at(4) << 16 }
+            }
+            // OldLO/OldHI are usually [$+2] (gbatek); the LDR-overwrite case is not modelled.
+            Region::Iwram => {
+                if word_aligned { at(4) | at(2) << 16 } else { at(2) | at(4) << 16 }
+            }
+            _ => at(4) * 0x0001_0001,
+        }
+    }
+
+    /// Read a halfword without charging cycles or touching IO, for open-bus values.
+    fn peek16(&self, address: u32) -> u16 {
+        let address = address & !1;
+        match region_of(address) {
+            Region::Bios => bios_read(address, 2) as u16,
+            Region::Ewram => read_le16(&self.ewram, (address as usize) & (EWRAM_SIZE - 1)),
+            Region::Iwram => read_le16(&self.iwram, (address as usize) & (IWRAM_SIZE - 1)),
+            Region::Palette => read_le16(&self.ppu.palette, (address & 0x3FF) as usize),
+            Region::Vram => read_le16(&self.ppu.vram, vram_offset(address)),
+            Region::Oam => read_le16(&self.ppu.oam, (address & 0x3FF) as usize),
+            Region::Rom => self.cart.rom_read16(address),
+            Region::Io | Region::Sram | Region::Unmapped => 0,
+        }
+    }
+
+    /// Read of the BIOS region (0x00000000-0x01FFFFFF), returned as the aligned word containing
+    /// `address`. Past 16K is unused memory. While the CPU executes outside the BIOS, reads return
+    /// the last opcode prefetched inside it (gbatek: BIOS ROM read protection).
+    fn bios_region_word(&self, address: u32) -> u32 {
+        if (address as usize) >= BIOS_SIZE {
+            self.open_bus_value()
+        } else if (self.executing_address as usize) >= BIOS_SIZE {
+            self.last_bios_prefetch
+        } else {
+            bios_read(address & !3, 4)
+        }
+    }
+
     pub fn read8(&mut self, address: u32) -> u8 {
         match self.charge(address, Width::Byte) {
-            Region::Bios => bios_read(address, 1) as u8,
+            Region::Bios => byte_of_word(self.bios_region_word(address), address),
             Region::Ewram => self.ewram[(address as usize) & (EWRAM_SIZE - 1)],
             Region::Iwram => self.iwram[(address as usize) & (IWRAM_SIZE - 1)],
             Region::Io => self.io_read8(io_offset(address)),
@@ -267,7 +337,7 @@ impl Bus {
             Region::Oam => self.ppu.oam[(address & 0x3FF) as usize],
             Region::Rom => self.cart.rom_read8(address),
             Region::Sram => self.cart.sram_read8(address),
-            Region::Unmapped => 0,
+            Region::Unmapped => byte_of_word(self.open_bus_value(), address),
         }
     }
 
@@ -278,7 +348,7 @@ impl Bus {
         // Misaligned addresses are force-aligned; rotating misaligned reads belongs to the CPU.
         let address = address & !1;
         match self.charge(address, Width::Halfword) {
-            Region::Bios => bios_read(address, 2) as u16,
+            Region::Bios => halfword_of_word(self.bios_region_word(address), address),
             Region::Ewram => read_le16(&self.ewram, (address as usize) & (EWRAM_SIZE - 1)),
             Region::Iwram => read_le16(&self.iwram, (address as usize) & (IWRAM_SIZE - 1)),
             Region::Io => self.io_read16(io_offset(address)),
@@ -287,7 +357,7 @@ impl Bus {
             Region::Oam => read_le16(&self.ppu.oam, (address & 0x3FF) as usize),
             Region::Rom => self.cart.rom_read16(address),
             Region::Sram => unreachable!("SRAM handled before alignment"),
-            Region::Unmapped => 0,
+            Region::Unmapped => halfword_of_word(self.open_bus_value(), address),
         }
     }
 
@@ -297,7 +367,7 @@ impl Bus {
         }
         let address = address & !3;
         match self.charge(address, Width::Word) {
-            Region::Bios => bios_read(address, 4),
+            Region::Bios => self.bios_region_word(address),
             Region::Ewram => read_le32(&self.ewram, (address as usize) & (EWRAM_SIZE - 1)),
             Region::Iwram => read_le32(&self.iwram, (address as usize) & (IWRAM_SIZE - 1)),
             Region::Io => self.io_read32(io_offset(address)),
@@ -310,7 +380,7 @@ impl Bus {
                 low | (high << 16)
             }
             Region::Sram => unreachable!("SRAM handled before alignment"),
-            Region::Unmapped => 0,
+            Region::Unmapped => self.open_bus_value(),
         }
     }
 
@@ -389,8 +459,17 @@ fn io_offset(address: u32) -> u32 {
     }
 }
 
+/// The byte of `word` that `address` selects within its aligned word.
+fn byte_of_word(word: u32, address: u32) -> u8 {
+    (word >> ((address & 3) * 8)) as u8
+}
+
+/// The halfword of `word` that `address` selects within its aligned word.
+fn halfword_of_word(word: u32, address: u32) -> u16 {
+    (word >> ((address & 2) * 8)) as u16
+}
+
 /// Little-endian read of `size` bytes from the BIOS. Outside 0x0000-0x3FFF reads 0.
-// ponytail: no BIOS read protection (last-fetched-opcode value); add when a test reads BIOS from ROM code.
 fn bios_read(address: u32, size: usize) -> u32 {
     let offset = address as usize;
     if offset + size > BIOS_SIZE {
@@ -507,6 +586,30 @@ mod tests {
         let mut bus = Bus::new(&[]);
         bus.write32(0x0401_0800, 0x0E00_0020);
         assert_eq!(bus.read32(0x0400_0800), 0x0E00_0020);
+    }
+
+    #[test]
+    fn unreadable_io_and_unused_memory_follow_open_bus_rules() {
+        let mut bus = Bus::new(&[]);
+        bus.iwram[0x108..0x10C].copy_from_slice(&0xE1A0_0000u32.to_le_bytes()); // [$+8]
+        bus.note_instruction_fetch(0x0300_0100, false);
+        bus.write16(0x0400_00B8, 0x1234); // DMA0CNT_L, write-only, DMA0CNT_H readable
+        assert_eq!(bus.read16(0x0400_00B8), 0);
+        assert_eq!(bus.read32(0x0400_00B0), 0xE1A0_0000, "DMA0SAD fragment is fully write-only");
+        assert_eq!(bus.read32(0x0400_00E0), 0xE1A0_0000, "unused IO");
+        assert_eq!(bus.read16(0x1000_0002), 0xE1A0, "unused memory");
+        bus.write16(0x0400_0010, 7); // BG0HOFS, write-only, BG0VOFS too
+        assert_eq!(bus.read16(0x0400_0010), 0x0000, "open bus low half of 0xE1A00000");
+    }
+
+    #[test]
+    fn bios_reads_are_protected_outside_the_bios() {
+        let mut bus = Bus::new(&[]);
+        bus.note_instruction_fetch(0x0000_0100, false);
+        let protected_value = bios_read(0x108, 4);
+        assert_eq!(bus.read32(0x0000_0000), bios_read(0, 4), "readable from inside the BIOS");
+        bus.note_instruction_fetch(0x0800_0000, false);
+        assert_eq!(bus.read32(0x0000_0000), protected_value);
     }
 
     #[test]
