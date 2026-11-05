@@ -4,3 +4,4 @@ date	phase	commit	overall	replay	procedural	audio	note
 2026-11-05	phase-3	9f4a767	0.6213	0.7818	0.7611	0.0000	sprites, affine/bitmap, windows/blending/mosaic compositor
 2026-11-05	phase-4	e551e06	0.7976	0.7806	0.7611	0.8852	PSG channels 1-4, FIFO A/B and mixer; SOUNDCNT_X silent-envelope status
 2026-11-06	phase-5	a31eece	0.8476	0.8648	0.7611	0.8827	DISPCNT forced-blank power-on, immediate DMA start (goodboy), SRAM_V detection
+2026-11-06	phase-6	b556f0e	0.8476	0.8648	0.7611	0.8827	deferred component stepping (no behaviour change), reset determinism test

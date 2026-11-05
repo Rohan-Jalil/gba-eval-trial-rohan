@@ -1,0 +1,2 @@
+date	phase	commit	overall	replay	procedural	audio	note
+2026-11-06	phase-6	b556f0e	0.8476	0.8648	0.7611	0.8827	deferred component stepping (no behaviour change), reset determinism test
