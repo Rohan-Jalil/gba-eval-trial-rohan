@@ -230,6 +230,7 @@ impl Dma {
         }
     }
 
+    /// Lowest-numbered (highest-priority) channel waiting to run.
     fn highest_priority_pending(&self) -> Option<usize> {
         self.channels.iter().position(|channel| channel.pending)
     }
@@ -242,19 +243,29 @@ fn split_offset(offset: u32) -> (usize, u32) {
     ((relative / CHANNEL_STRIDE) as usize, relative % CHANNEL_STRIDE)
 }
 
+/// Replace the masked bytes of the low halfword of a 32-bit register.
 fn merge_low(old: u32, value: u16, mask: u16) -> u32 {
     (old & 0xFFFF_0000) | crate::io::merge(old as u16, value, mask) as u32
 }
 
+/// Replace the masked bytes of the high halfword of a 32-bit register.
 fn merge_high(old: u32, value: u16, mask: u16) -> u32 {
     (old & 0x0000_FFFF) | (crate::io::merge((old >> 16) as u16, value, mask) as u32) << 16
 }
 
-/// DMA cannot read the BIOS (read-protected) or unused memory below 0x02000000 / above 0x0FFFFFFF.
+/// DMA cannot read the BIOS (read-protected), the unused areas 0x00004000-0x01FFFFFF and IO
+/// above 0x04000400 (bar the 0x800 register and its 64K mirrors), or SRAM (8-bit bus; gbatek: Game Pak DMA).
 // Guess (gbatek: Reading from Unused Memory): with nothing driving the bus, the DMA sees the
 // value it last moved itself. nba-hw/dma-latch shows this is kept per channel.
 fn source_is_readable(address: u32) -> bool {
-    (0x0200_0000..0x1000_0000).contains(&address)
+    match address >> 24 {
+        0x02 | 0x03 | 0x05..=0x0D => true,
+        0x04 => {
+            let io_offset = address & 0x00FF_FFFF;
+            io_offset < 0x400 || (0x800..0x804).contains(&(io_offset & 0xFFFF)) // 0x800 repeats every 64K
+        }
+        _ => false,
+    }
 }
 
 /// DMA word read; an unreadable source repeats the channel's last value.
@@ -262,7 +273,7 @@ fn read_word(bus: &mut Bus, address: u32, last_value: &mut u32) -> u32 {
     if source_is_readable(address) {
         *last_value = bus.read32(address);
     } else {
-        bus.access_cycles += 1;
+        bus.read32(address); // the access still happens and costs that region's cycles
     }
     *last_value
 }
@@ -276,7 +287,7 @@ fn read_halfword(bus: &mut Bus, address: u32, destination: u32, last_value: &mut
         *last_value = value as u32 * 0x0001_0001;
         value
     } else {
-        bus.access_cycles += 1;
+        bus.read16(address); // the access still happens and costs that region's cycles
         (*last_value >> ((destination & 2) * 8)) as u16
     }
 }
@@ -334,18 +345,23 @@ fn run_transfer(bus: &mut Bus, channel_index: usize) -> u32 {
     let mut source = channel.internal_source;
     let mut destination = channel.internal_destination;
     let mut last_value = channel.last_value;
-    for _ in 0..unit_count {
+    // Transfer time 2N+2(n-1)S+xI: the first unit is non-sequential on each side, the rest sequential.
+    for unit_index in 0..unit_count {
+        let sequential = unit_index > 0;
         if word_sized {
+            bus.force_next_access_sequential(sequential);
             let value = read_word(bus, source, &mut last_value);
+            bus.force_next_access_sequential(sequential);
             bus.write32(destination, value);
         } else {
+            bus.force_next_access_sequential(sequential);
             let value = read_halfword(bus, source, destination, &mut last_value);
+            bus.force_next_access_sequential(sequential);
             bus.write16(destination, value);
         }
         source = step_address(source, source_control, unit_bytes) & channel.source_mask();
         destination = step_address(destination, destination_control, unit_bytes) & channel.destination_mask();
     }
-    // ponytail: every access is charged as non-sequential by the bus; gbatek's 2N+2(n-1)S needs an S/N split there.
     let transfer_cycles = bus.take_access_cycles() + internal_cycles;
     bus.access_cycles = cycles_before;
 
@@ -354,7 +370,10 @@ fn run_transfer(bus: &mut Bus, channel_index: usize) -> u32 {
     live.internal_source = source;
     live.last_value = last_value;
     live.internal_destination = destination;
+    // Choice, not spec: Repeat with Immediate timing still self-disables, since gbatek gives no
+    // start condition that could restart it.
     let repeats = live.control & REPEAT_BIT != 0 && live.start_timing() != StartTiming::Immediate;
+    let irq_at_end = live.control & IRQ_AT_END_BIT != 0;
     if repeats {
         live.internal_count = live.unit_count();
         if destination_control == AddressControl::IncrementReload {
@@ -364,7 +383,7 @@ fn run_transfer(bus: &mut Bus, channel_index: usize) -> u32 {
         live.control &= !ENABLE_BIT;
         live.pending = false;
     }
-    if channel.control & IRQ_AT_END_BIT != 0 {
+    if irq_at_end {
         bus.irq.request(DMA_IRQ_SOURCES[channel_index]);
     }
     transfer_cycles
