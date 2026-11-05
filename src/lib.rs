@@ -162,8 +162,9 @@ pub extern "C" fn emu_audio_rate() -> i32 {
 mod tests {
     use super::*;
 
-    /// A corpus ROM with sound and title-screen input; the test skips if the benchmark is absent.
-    const DETERMINISM_ROM: &str = "/var/www/html/test-projects/gba-eval/corpus/roms/homebrew/heartwrench-advance.gba";
+    /// A corpus ROM with sound and title-screen input, under `$GBA_EVAL` (default
+    /// `../../gba-eval` relative to the crate); the test skips if the benchmark is absent.
+    const DETERMINISM_ROM: &str = "corpus/roms/homebrew/heartwrench-advance.gba";
     const FRAMES_PER_RUN: u32 = 100;
 
     /// Keys held on `frame`: Start, then A, so the run leaves the title screen.
@@ -197,8 +198,11 @@ mod tests {
 
     #[test]
     fn reset_reproduces_load_rom_exactly() {
-        let Ok(rom) = std::fs::read(DETERMINISM_ROM) else {
-            eprintln!("skipping: {DETERMINISM_ROM} not found");
+        let gba_eval = std::env::var("GBA_EVAL")
+            .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/../../gba-eval").to_string());
+        let rom_path = std::path::Path::new(&gba_eval).join(DETERMINISM_ROM);
+        let Ok(rom) = std::fs::read(&rom_path) else {
+            eprintln!("skipping: {} not found", rom_path.display());
             return;
         };
         assert_eq!(emu_init(), 1);
