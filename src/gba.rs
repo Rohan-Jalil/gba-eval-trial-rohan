@@ -6,6 +6,7 @@
 use crate::bus::Bus;
 use crate::cpu::Cpu;
 use crate::dma;
+use crate::irq::IrqSource;
 use crate::ppu::CYCLES_PER_LINE;
 use crate::scheduler::Scheduler;
 
@@ -48,6 +49,11 @@ impl Gba {
 
     /// Run until the frame boundary (see `FRAME_END_LINE`).
     pub fn run_frame(&mut self) {
+        // Keypad IRQ (gbatek: GBA Keypad Input, KEYCNT). Keys only change between frames.
+        // ponytail: checked once per frame; a mid-frame KEYCNT write waits until the next frame.
+        if self.bus.keypad.irq_condition_met() {
+            self.bus.irq.request(IrqSource::Keypad);
+        }
         while self.cycles_until_frame_end > 0 {
             let mut cycles = self.cpu.step(&mut self.bus);
             cycles += dma::run_pending_transfers(&mut self.bus);
