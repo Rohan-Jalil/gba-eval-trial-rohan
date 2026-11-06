@@ -86,6 +86,7 @@ date, what, why.
 | 2026-11-06 | Reset determinism test: `lib.rs tests::reset_reproduces_load_rom_exactly` hashes 100 frames of framebuffer and audio after load and after `emu_reset` (heartwrench from the corpus, skips if missing) | PLAN.md Phase 6. |
 | 2026-11-06 | perf review minors: renamed the APU field to `cycles_since_sample`; deferral fields made `pub(crate)`. Deferred: unit tests for the three cycles-until-event helpers, a louder skip in the determinism test | Minor. |
 | 2026-11-06 | Phase 6 milestone: overall 0.8476 (replay 0.8648, procedural 0.7611, audio 0.8827), identical to phase 5 (max per-test difference 0.0). Gate met: scores within 0.005; reset determinism test passes; the full suite at 250M (2x headroom) has 0 traps and the same overall | Performance and hardening done with no behaviour change. |
+| 2026-11-06 | Handoff: all worktrees removed (every branch kept, failed attempts included); absolute benchmark paths replaced by `$GBA_EVAL` (default `../../gba-eval` relative to the repo, resolved through the main checkout by `scripts/gba-eval-path.sh` so it also works from worktrees); deny rules made location-independent (`//**/gba-eval/...`); `dist/gba_emu.wasm` built from `git archive phase-6` with SHA256SUMS (byte-identical to a build of main); `scripts/export-logs.sh` and `scripts/token-usage.sh` added, not yet run | Human request: the repo must run from any clone location and carry a verifiable artifact and the session logs. |
 
 ## Agent and model usage per phase
 
